@@ -1,5 +1,7 @@
 /output
-/output
 __pycache__/
 *.py[oc]
 godot_mcp/captures/
+.freebuff/
+Our Build Plan.md
+.venv/

@@ -166,7 +166,7 @@ Requires **Blender 5.2 LTS** and **mcp >= 2.0**. Note that `mcp` 2.x renamed `Fa
   "mcpServers": {
     "ultima3d": {
       "command": "python",
-      "args": ["C:/Users/buffb/Desktop/GitHub/AssetGeneration_MCP/ultima3d/server.py"]
+      "args": ["C:/Users/buffb/Desktop/GitHub/Ultima3D/ultima3d/server.py"]
     }
   }
 }
