@@ -1,8 +1,7 @@
 """GLB round-trip test: does what we ship survive serialization?
 
-build → inspect (manifest) → rig (auto + forced fallback) → validate → finalize
-→ clear scene → import exported GLB → inspect imported result → compare.
-Runs the worker directly (no MCP layer), like smoke_test.py.
+build → rig (auto + forced fallback) → finalize → clear → re-import → compare
+against the manifest, running the worker directly like smoke_test.py.
 """
 import json
 import os

@@ -234,8 +234,7 @@ def _asset_meshes_names():
 def _resolve_detail(builder, kwargs):
     """Apply the detail profile to density params the builder actually accepts.
 
-    The LLM specifies semantic quality (detail: draft|game|hero); Blender
-    determines geometry. An explicit density param always wins over the profile.
+    An explicit density param always wins over the profile value.
     """
     detail = kwargs.pop("detail", None)
     if not detail:
