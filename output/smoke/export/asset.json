@@ -1,0 +1,184 @@
+{
+  "name": "medieval_mailbox",
+  "triangles": 3884,
+  "budget": 8000,
+  "lods": [
+    8000,
+    4000
+  ],
+  "textures": {
+    "albedo": "C:\\Users\\buffb\\Desktop\\GitHub\\AssetGeneration_MCP\\output\\smoke\\export\\medieval_mailbox_albedo.png",
+    "normal": "C:\\Users\\buffb\\Desktop\\GitHub\\AssetGeneration_MCP\\output\\smoke\\export\\medieval_mailbox_normal.png",
+    "roughness": "C:\\Users\\buffb\\Desktop\\GitHub\\AssetGeneration_MCP\\output\\smoke\\export\\medieval_mailbox_roughness.png",
+    "metallic": "C:\\Users\\buffb\\Desktop\\GitHub\\AssetGeneration_MCP\\output\\smoke\\export\\medieval_mailbox_metallic.png"
+  },
+  "files": {
+    "main": "C:\\Users\\buffb\\Desktop\\GitHub\\AssetGeneration_MCP\\output\\smoke\\export\\medieval_mailbox.glb",
+    "LOD1": "C:\\Users\\buffb\\Desktop\\GitHub\\AssetGeneration_MCP\\output\\smoke\\export\\medieval_mailbox_LOD1.glb",
+    "collision": "C:\\Users\\buffb\\Desktop\\GitHub\\AssetGeneration_MCP\\output\\smoke\\export\\medieval_mailbox_collision.glb"
+  },
+  "recipe": {
+    "body": {
+      "builder": "rounded_box",
+      "size": [
+        1.0,
+        0.45,
+        0.5
+      ],
+      "bevel": 0.06,
+      "material": {
+        "name": "wood",
+        "color": [
+          0.45,
+          0.3,
+          0.18
+        ],
+        "roughness": 0.7
+      }
+    },
+    "roof": {
+      "builder": "roof",
+      "width": 1.15,
+      "depth": 0.55,
+      "height": 0.35,
+      "location": [
+        0,
+        0,
+        0.5
+      ],
+      "material": {
+        "name": "dark_iron",
+        "color": [
+          0.1,
+          0.1,
+          0.11
+        ],
+        "roughness": 0.4,
+        "metallic": 0.9
+      }
+    },
+    "post": {
+      "builder": "cylinder",
+      "radius": 0.06,
+      "depth": 1.1,
+      "vertices": 12,
+      "location": [
+        0,
+        0,
+        -0.55
+      ],
+      "material": {
+        "name": "wood",
+        "color": [
+          0.4,
+          0.27,
+          0.16
+        ],
+        "roughness": 0.75
+      }
+    },
+    "latch": {
+      "builder": "rounded_box",
+      "size": [
+        0.12,
+        0.06,
+        0.18
+      ],
+      "radius": 0.02,
+      "location": [
+        0,
+        -0.25,
+        0.15
+      ],
+      "material": {
+        "name": "brass",
+        "color": [
+          0.75,
+          0.6,
+          0.2
+        ],
+        "roughness": 0.3,
+        "metallic": 1.0
+      }
+    },
+    "band_0": {
+      "builder": "torus",
+      "major_radius": 0.54,
+      "minor_radius": 0.02,
+      "location": [
+        0,
+        0,
+        0.1
+      ],
+      "rotation": [
+        1.5708,
+        0,
+        0
+      ],
+      "material": {
+        "name": "dark_iron",
+        "color": [
+          0.1,
+          0.1,
+          0.11
+        ],
+        "roughness": 0.4,
+        "metallic": 0.9
+      }
+    },
+    "band_1": {
+      "builder": "torus",
+      "major_radius": 0.54,
+      "minor_radius": 0.02,
+      "location": [
+        0,
+        0,
+        0.25
+      ],
+      "rotation": [
+        1.5708,
+        0,
+        0
+      ],
+      "material": {
+        "name": "dark_iron",
+        "color": [
+          0.1,
+          0.1,
+          0.11
+        ],
+        "roughness": 0.4,
+        "metallic": 0.9
+      }
+    },
+    "band_2": {
+      "builder": "torus",
+      "major_radius": 0.54,
+      "minor_radius": 0.02,
+      "location": [
+        0,
+        0,
+        0.4
+      ],
+      "rotation": [
+        1.5708,
+        0,
+        0
+      ],
+      "material": {
+        "name": "dark_iron",
+        "color": [
+          0.1,
+          0.1,
+          0.11
+        ],
+        "roughness": 0.4,
+        "metallic": 0.9
+      }
+    }
+  },
+  "blueprint": {
+    "asset": "stylized medieval mailbox",
+    "proportions": "w1 d0.45 h0.65"
+  }
+}

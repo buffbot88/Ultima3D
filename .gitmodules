@@ -1,0 +1,4 @@
+[submodule "blender_mcp"]
+	path = blender_mcp
+	url = https://github.com/buffbot88/mcp-for-blender.git
+	branch = local-changes

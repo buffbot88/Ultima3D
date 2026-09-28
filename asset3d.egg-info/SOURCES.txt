@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+asset3d/blender_worker.py
+asset3d/server.py
+asset3d.egg-info/PKG-INFO
+asset3d.egg-info/SOURCES.txt
+asset3d.egg-info/dependency_links.txt
+asset3d.egg-info/entry_points.txt
+asset3d.egg-info/requires.txt
+asset3d.egg-info/top_level.txt
