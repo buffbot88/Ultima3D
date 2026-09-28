@@ -144,6 +144,41 @@ validate_asset()
 finalize_asset(name="medieval_mailbox")
 ```
 
+## Cloning
+
+`blender_mcp` is a git submodule pointing at our fork of
+[mcp-for-blender](https://github.com/ahujasid/mcp-for-blender) — so a plain
+`git clone` gives you an empty folder:
+
+```bash
+git clone --recurse-submodules https://github.com/buffbot88/Ultima3D.git
+cd Ultima3D
+```
+
+If you already cloned without the flag:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Following upstream blender_mcp
+
+The submodule's `local-changes` branch sits on top of upstream history with our local
+adaptations (stubbed telemetry, `image_files` for hosts that can't render image blocks).
+To pull in upstream changes:
+
+```bash
+cd blender_mcp
+git remote add upstream https://github.com/ahujasid/mcp-for-blender.git  # once
+git fetch upstream
+git checkout local-changes
+git merge upstream/main          # resolve conflicts, then run blender_mcp's tests
+cd ..
+git add blender_mcp              # record the new submodule commit
+```
+
+`godot_mcp` is not a submodule — it is regular tracked code and needs no special handling.
+
 ## Run
 
 ```bash
