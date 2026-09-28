@@ -1,2 +1,0 @@
-[console_scripts]
-asset3d = asset3d.server:cli

@@ -1,4 +1,4 @@
-# Our Build Plan — asset3d
+# Our Build Plan — ultima3d
 
 ## Context
 
@@ -16,19 +16,19 @@ recipes, game-ready GLB output (LODs, collision, validation) for Godot.
 
 | File | Why |
 |---|---|
-| `pyproject.toml` | Package metadata; `mcp` dependency; `asset3d` entry point |
-| `asset3d/blender_worker.py` | JSON-lines RPC worker run by `blender --background`; geometry compiler (17 constructors, 12 `build_*` composites), 26 registered builders, 11 RPC ops (build/render/validate/finalize/rig/recipe) |
-| `asset3d/server.py` | MCP server (`mcp` 2.x `MCPServer`), 13 tools, persistent worker management |
+| `pyproject.toml` | Package metadata; `mcp` dependency; `ultima3d` entry point |
+| `ultima3d/blender_worker.py` | JSON-lines RPC worker run by `blender --background`; geometry compiler (17 constructors, 12 `build_*` composites), 26 registered builders, 11 RPC ops (build/render/validate/finalize/rig/recipe) |
+| `ultima3d/server.py` | MCP server (`mcp` 2.x `MCPServer`), 13 tools, persistent worker management |
 | `tests/smoke_test.py` | End-to-end pipeline check without the MCP layer |
 | `README.md` | Architecture, tools, run/wiring instructions |
-| `C:/Users/buffb/.agents/mcp.json` | Added `asset3d` server entry (existing entries untouched) |
+| `C:/Users/buffb/.agents/mcp.json` | Added `ultima3d` server entry (existing entries untouched) |
 
 ## Change list (historical)
 
 1. Worker protocol: request/response JSON lines, `@JSON@` prefix to skip Blender stdout noise.
 2. Geometry compiler + builder registry; recipe compiler maps `{node: {builder, params, material}}`.
 3. Pipeline: join + normalize, 8-view EEVEE/Workbench renders with auto-fit camera, `bpy`-measured validation, finalize (clean → smart UV → decimate → LODs → convex-hull collision → GLB + `asset.json`).
-4. MCP surface: `create_3d`, `refine_asset`, `inspect_asset`, `render_asset`, `set_material`, `set_geometry`, `validate_asset`, `finalize_asset`, `rig_asset`, `save_recipe`, `load_recipe`, `asset3d_status`, `reset_scene`.
+4. MCP surface: `create_3d`, `refine_asset`, `inspect_asset`, `render_asset`, `set_material`, `set_geometry`, `validate_asset`, `finalize_asset`, `rig_asset`, `save_recipe`, `load_recipe`, `ultima3d_status`, `reset_scene`.
 5. Registration in Freebuff config.
 
 ## Risks / known deviations (as originally recorded)
@@ -47,15 +47,15 @@ recipes, game-ready GLB output (LODs, collision, validation) for Godot.
 | Built without plan approval | **Closed.** Remediation since carried out under separately approved plans. |
 | `rig_asset` placeholder (single root bone) | **Resolved.** Multi-bone density-adaptive auto-rig with automatic weights, idempotent, rig metadata in `asset.json`. |
 | Baking incomplete (albedo/normal only, metallic unhandled, smoke test with `bake: False`) | **Resolved.** albedo, normal, roughness and metallic all bake; the smoke test now bakes for real and asserts all four PNGs exist and are non-empty. |
-| `create_lathe` open ring ends | **Open.** |
+| `create_lathe` open ring ends | **Resolved (v0.2).** Off-axis end rings capped with n-gons; near-zero-radius rings fan to a pole vertex. |
 | `create_arch`/`create_extrusion` rely on solidify for caps | **Resolved in effect.** Solidify is now baked before joining, so caps survive multi-node recipes. |
-| Validation counts only the joined main mesh | **Open.** |
-| No `git` repo initialized | **Open.** |
+| Validation counts only the joined main mesh | **Resolved (v0.2).** Validate, inspect, finalize, materials and collision are asset-wide via the in-memory manifest. |
+| No `git` repo initialized | **Resolved.** Repository initialized; v0.1 committed. |
 
 ## Validation (already run)
 
 - Worker smoke test: build (4,021 tris as recorded then; the current test file reports 3,884) → 8 renders → validate PASS → finalize with LOD1 + collision → parametric rebuild. All pass on Blender 5.2.2 LTS.
-- MCP stdio handshake: initialize, tools/list (13 tools), live `asset3d_status` → `{"ok": true, "blender": "5.2.2 LTS"}`.
+- MCP stdio handshake: initialize, tools/list (13 tools), live `ultima3d_status` → `{"ok": true, "blender": "5.2.2 LTS"}`.
 
 ## Remediation pass — Blender and the agentic loop (2026-09-28)
 
@@ -92,7 +92,46 @@ separate approval. Measurement that cannot distinguish the hypotheses is not evi
 requiring its own approved plan; both were subsequently completed under separately approved
 plans, as recorded above.
 
-Outstanding known deviations: `create_lathe` open ring ends, validation limited to the joined
-main mesh, per-builder triangle density unbudgeted, textures not embedded in the GLB, and no
-version control. `tests/smoke_test.py` remains the only automated check and does not cover
+Outstanding known deviations: per-builder triangle density unbudgeted (now addressed by
+detail profiles + advisory per-node budgets, v0.2) and textures not embedded in the GLB.
+`tests/smoke_test.py` remains the only automated check and does not cover
 any of the five defects above, so none of this pass is regression-protected.
+
+## v0.2 pass — trustworthy game-asset compiler (2026-09-28)
+
+User directive: lock down correctness before adding builders or AI behavior; rename the
+project to **Ultima3D** (full rename: package, server name, entry point, `ULTIMA3D_*` env
+vars, mcp.json wiring). Plan approved via structured questions (full pass + `force_fallback`
+param). Version 0.1.0 labels the v0.1 baseline commit; this pass is the v0.2 milestone.
+
+| Change | Detail |
+|---|---|
+| Rename | `asset3d/` → `ultima3d/`, server name, entry point, env vars, docs, `~/.agents/mcp.json` |
+| Asset manifest | Every build records `{objects per node, materials, root_collection}`; recorded in build result and `asset.json` |
+| Asset-wide ops | `inspect` (union bounds/dims/tris/verts/non-manifold), `validate`, `finalize`, `set_material` (no target = all asset meshes) |
+| Material propagation | A node's `material` applies to **all** objects the node created (barrel hoops, crate slats, mullions, posts, foliage) |
+| Detail profiles | `detail: draft\|game\|hero` resolves density knobs against each builder's actual signature; explicit params win; per-node `triangle_budget` reported (`over_budget` flag) |
+| Lathe caps | End rings closed: n-gon caps off-axis rings, pole fans near-zero rings |
+| Rig fallback | `rig(force_fallback=true)` exercises the fallback; fallback weights are rigid per-height assignments (empty groups are dropped by glTF export) |
+| Round-trip test | New `tests/roundtrip_test.py`: build → rig auto+forced → pose-probe deformation → finalize → clear → re-import GLB → compare mesh/material/triangle/dimension/rig vs manifest |
+
+### Defects found by the round-trip test (and fixed)
+
+1. `asset.json` recorded triangle count **after** LOD decimation had mutated the scene (the
+   main GLB was correct; the manifest lied). Fixed: measure before LODs.
+2. The rig fallback created **empty vertex groups**, which glTF export drops — the armature
+   vanished from the shipped GLB. Fixed: rigid per-bone weight-1.0 assignment by world Z.
+3. Pose-bone deformation probe set `rotation_euler` on a quaternion bone (silently
+   ignored). Fixed: set `rotation_mode` first.
+4. Blender's glTF importer (`bone_heuristic="BLENDER"`) leaves a stray `Icosphere` bind-pose
+   helper object in the scene. Fixed: import with `TEMPERANCE` and sweep any remnants.
+
+### Validation
+
+- `tests/smoke_test.py`: green, byte-comparable behavior (3,884 tris, 6-bone auto-rig,
+  four bake PNGs) plus new manifest in build output.
+- `tests/roundtrip_test.py`: 24/24 checks green — mesh/material/triangle/dimension exact
+  match on re-import, rig survives with 3 bones, collision GLB reimports, deformation
+  verified (max displacement 0.1379).
+- The `_probe_*` ops are test instrumentation (scene/import introspection), not part of
+  the MCP surface.

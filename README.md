@@ -1,14 +1,19 @@
-# asset3d — Agentic 3D Asset Generator MCP
+# ultima3d (Project Ultima3D) — Agentic 3D Asset Generator MCP
 
 AI-directed procedural 3D synthesis: the LLM owns **intent and visual judgement**, the
 Blender worker owns **mechanics and verification**. Exposes 13 high-level MCP tools, not
 hundreds of Blender buttons.
 
+**Milestones.** v0.1 — deterministic procedural asset compiler proven.
+v0.2 (this tree) — trustworthy game-asset compiler: measurements are asset-wide, budgets
+are enforceable, materials are consistent, rigs are tested, and exported artifacts are
+round-trip verified.
+
 ```text
 LLM (any MCP client)
  │  create_3d(recipe, blueprint)
  ▼
-asset3d MCP server (Python, stdio, mcp 2.x)
+ultima3d MCP server (Python, stdio, mcp 2.x)
  │  JSON-lines RPC ("@JSON@"-prefixed responses)
  ▼
 blender --background --factory-startup
@@ -23,7 +28,7 @@ so revisions rebuild deterministically from the saved recipe and stay reproducib
 
 ## Tools
 
-All 13 are registered on the `asset3d` MCP server.
+All 13 are registered on the `ultima3d` MCP server.
 
 | Tool | Purpose |
 |---|---|
@@ -37,7 +42,7 @@ All 13 are registered on the `asset3d` MCP server.
 | `finalize_asset(...)` | Clean → UV → decimate → bake → LODs → collision → GLB + `asset.json` |
 | `rig_asset(bones)` | Multi-bone auto-rig with automatic weights |
 | `save_recipe(path)` / `load_recipe(path, rebuild)` | Editable, replayable generation history (JSON) |
-| `asset3d_status()` | Worker health: Blender version, liveness |
+| `ultima3d_status()` | Worker health: Blender version, liveness |
 | `reset_scene()` | Clear the scene and forget the current recipe/blueprint |
 
 `finalize_asset` defaults: `triangle_budget=8000`, `collision="auto"`,
@@ -58,6 +63,27 @@ Above them sit 12 `build_*` composites, such as `build_roof` (a solidified extru
 `build_barrel` (a lathe plus hoops). All 26 registered builders are verified to build on
 Blender 5.2.2.
 
+Every build maintains an in-memory **asset manifest**: each recipe node registers the
+objects it created, so all downstream operations (inspect, materials, validate, finalize,
+collision, export) act on the whole asset — there is no "primary object" concept.
+Recorded in the build result and in `asset.json`.
+
+## Detail profiles
+
+Recipe nodes may specify semantic quality instead of Blender density knobs:
+
+```json
+{"builder": "barrel", "radius": 0.45, "height": 0.9, "detail": "game", "triangle_budget": 1200}
+```
+
+`detail` is `draft` (8 segments) / `game` (16) / `hero` (32); the profile fills whichever
+density parameters the chosen builder actually accepts (`vertices`, `segments`,
+`ring_count`, `bevel_segments`), and an explicit parameter always wins over the profile.
+The LLM specifies intent; Blender determines geometry — extended to polygon density.
+A per-node `triangle_budget` is measured after the build and reported as
+`node_triangles[node].over_budget` in the build result (advisory; the global budget is
+enforced by `validate_asset`).
+
 ## Rigging
 
 `rig_asset()` builds a vertical bone chain adapted to where the geometry actually is:
@@ -67,31 +93,38 @@ Blender 5.2.2.
 - Joints placed at cumulative-density fractions, so they cluster where mass concentrates
   rather than at even intervals.
 - Connected chain with tapering bone radii.
-- Weights via `parent_set(type="ARMATURE_AUTO")`, with an explicit fallback (parent plus
-  empty vertex groups) if Blender's automatic weighting refuses. The result reports
-  `weights_source` as `auto`, `fallback`, or `existing`.
+- Weights via `parent_set(type="ARMATURE_AUTO")`. The fallback path (`force_fallback=true`
+  forces it) assigns every vertex rigidly, weight 1.0, to the bone spanning its world Z —
+  empty groups would be dropped by glTF export. `weights_source` reports `auto`,
+  `fallback`, or `existing`.
 - Idempotent: rigging twice returns the existing armature instead of stacking a second one.
+- Verified to deform (pose probe) and to survive GLB export/re-import, by
+  `tests/roundtrip_test.py`.
 
 `finalize_asset` then exports the rigged GLB and records an `armature`/`bones`/`joints_z`
 block in `asset.json`.
 
 ## Validation
 
-`validate_asset` returns seven machine checks, all measured in `bpy`:
+`validate_asset` returns seven machine checks, all measured in `bpy` and **aggregated over
+every mesh in the asset**:
 
 `no_duplicate_vertices`, `no_zero_area_faces`, `triangle_budget`, `has_uv`,
 `has_material`, `scale_applied`, `non_manifold_edges` (advisory by default, since stylized
 hard-surface meshes are rarely watertight).
 
+`inspect_asset` reports the union bounds, dimensions, object count, total triangles and
+vertices, materials, and non-manifold edge count of the whole asset.
+
 ## Output contract
 
-`finalize_asset` writes to `$ASSET3D_OUT/export`:
+`finalize_asset` writes to `$ULTIMA3D_OUT/export`:
 
-- `<name>.glb` — main mesh, rigged when a rig exists
+- `<name>.glb` — main asset (all meshes; rigged when a rig exists)
 - `<name>_LOD1.glb` — decimated LOD per budget entry
-- `<name>_collision.glb` — convex hull for collision
-- `<name>_<channel>.png` — baked PBR channels
-- `asset.json` — triangles, dimensions, materials, texture paths, rig block
+- `<name>_collision.glb` — convex hull of the union of all meshes
+- `<name>_<channel>.png` — baked PBR channels (per mesh when the asset is multi-mesh)
+- `asset.json` — triangles, dimensions, materials, objects, manifest, texture paths, rig block
 
 ## Example
 
@@ -99,7 +132,8 @@ hard-surface meshes are rarely watertight).
 create_3d(recipe={
   "body":  {"builder": "rounded_box", "size": [1, .45, .5], "radius": .06,
             "material": {"name": "wood", "color": [.45, .3, .18], "roughness": .7}},
-  "roof":  {"builder": "roof", "width": 1.15, "depth": .55, "height": .35, "location": [0, 0, .5]},
+  "roof":  {"builder": "roof", "width": 1.15, "depth": .55, "height": .35, "location": [0, 0, .5],
+            "material": {"name": "dark_iron", "color": [.1, .1, .11], "roughness": .4, "metallic": .9}},
   "latch": {"builder": "rounded_box", "size": [.12, .06, .18], "location": [0, -.25, .15],
             "material": {"name": "brass", "color": [.75, .6, .2], "metallic": 1.0}},
 }, name="medieval_mailbox")
@@ -114,10 +148,11 @@ finalize_asset(name="medieval_mailbox")
 
 ```bash
 pip install -e .
-python tests/smoke_test.py   # end-to-end: build → render → validate → finalize → rig → re-finalize
+python tests/smoke_test.py      # end-to-end: build → render → validate → finalize → rig → re-finalize
+python tests/roundtrip_test.py  # build → rig (auto+fallback) → finalize → clear → re-import GLB → compare vs manifest
 ```
 
-Config (env): `ASSET3D_BLENDER` (Blender executable), `ASSET3D_OUT` (output dir).
+Config (env): `ULTIMA3D_BLENDER` (Blender executable), `ULTIMA3D_OUT` (output dir).
 
 Requires **Blender 5.2 LTS** and **mcp >= 2.0**. Note that `mcp` 2.x renamed `FastMCP` to
 `MCPServer`; `mcp.server.fastmcp` deliberately does not resolve.
@@ -129,9 +164,9 @@ Requires **Blender 5.2 LTS** and **mcp >= 2.0**. Note that `mcp` 2.x renamed `Fa
 ```json
 {
   "mcpServers": {
-    "asset3d": {
+    "ultima3d": {
       "command": "python",
-      "args": ["C:/Users/buffb/Desktop/GitHub/AssetGeneration_MCP/asset3d/server.py"]
+      "args": ["C:/Users/buffb/Desktop/GitHub/AssetGeneration_MCP/ultima3d/server.py"]
     }
   }
 }
@@ -149,13 +184,11 @@ diff against a recipe rather than a rewrite of geometry.
 
 ## Known limitations
 
-- A builder's `material` applies only to the object it returns, so sub-parts (barrel hoops,
-  crate slats, window mullions, fence posts, tree foliage) have no material.
-- `create_lathe` leaves open ring ends.
-- `validate_asset`'s mesh-level checks cover only the joined main mesh.
-- `inspect_asset` reports dimensions for a single mesh, not the whole asset.
-- Triangle density is unbudgeted per builder: a `torus` is 1152 tris and a default `barrel`
-  3600, which can dominate a game-ready budget.
+- A builder's `material` applies to all objects the node created (hoops, slats, mullions,
+  posts, foliage) — but per-sub-part overrides inside one node are not possible; split the
+  node if two sub-parts need different materials.
 - Baked textures ship beside the GLB rather than embedded in it.
-- `tests/smoke_test.py` is the only automated check; the geometry and error-surfacing fixes
-  recorded in `Our Build Plan.md` are not yet regression-protected.
+- Per-node `triangle_budget` is advisory; only the asset-wide budget is enforced at
+  validate/finalize time.
+- `finalize_asset` embeds textures in the GLB only when Blender's exporter does so via
+  material node images; external bake PNGs are the canonical reference (recorded in asset.json).

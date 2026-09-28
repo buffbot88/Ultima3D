@@ -1,14 +1,14 @@
-"""asset3d — agentic 3D asset generator MCP server.
+"""ultima3d — agentic 3D asset generator MCP server.
 
-Exposes ~12 high-level tools (create_3d, refine_asset, render_asset,
+Exposes 13 high-level tools (create_3d, refine_asset, render_asset,
 validate_asset, finalize_asset, ...) instead of hundreds of Blender buttons.
-The Blender worker (asset3d/blender_worker.py) owns the mechanics; the LLM
+The Blender worker (ultima3d/blender_worker.py) owns the mechanics; the LLM
 owns intent and visual judgement.
 
 Config via env:
-    ASSET3D_BLENDER   path to blender executable
+    ULTIMA3D_BLENDER   path to blender executable
                       (default: C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe)
-    ASSET3D_OUT       output directory for renders/exports (default: ./output)
+    ULTIMA3D_OUT       output directory for renders/exports (default: ./output)
 """
 
 from __future__ import annotations
@@ -28,12 +28,12 @@ _HERE = Path(__file__).resolve().parent
 WORKER = _HERE / "blender_worker.py"
 
 BLENDER = os.environ.get(
-    "ASSET3D_BLENDER",
+    "ULTIMA3D_BLENDER",
     r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
 )
-OUT_DIR = Path(os.environ.get("ASSET3D_OUT", Path.cwd() / "output"))
+OUT_DIR = Path(os.environ.get("ULTIMA3D_OUT", Path.cwd() / "output"))
 
-mcp = MCPServer("asset3d")
+mcp = MCPServer("ultima3d")
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ class Worker:
 
     def _start(self):
         if not Path(BLENDER).is_file():
-            raise ToolError(f"blender not found at {BLENDER!r}; set ASSET3D_BLENDER")
+            raise ToolError(f"blender not found at {BLENDER!r}; set ULTIMA3D_BLENDER")
         self.proc = subprocess.Popen(
             [BLENDER, "--background", "--factory-startup", "--python", str(WORKER)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -255,12 +255,15 @@ def load_recipe(path: str, rebuild: bool = True) -> str:
     """Load a saved recipe; optionally rebuild the asset from it immediately."""
     r = _w.call("load_recipe", {"path": path})
     if rebuild:
-        r["build"] = _w.call("build", {"recipe": r and json.load(open(path))["recipe"]})
+        with open(path) as f:
+            data = json.load(f)
+        r["build"] = _w.call("build", {"recipe": data["recipe"], "name": data.get("asset") or "asset",
+                                       "blueprint": data.get("blueprint"), "join": True})
     return json.dumps(r)
 
 
 @mcp.tool()
-def asset3d_status() -> str:
+def ultima3d_status() -> str:
     """Check the Blender worker: version, liveness, current scene state."""
     try:
         ping = _w.call("ping")

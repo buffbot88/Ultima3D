@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: asset3d
-Version: 0.1.0
-Summary: Agentic 3D asset generator MCP: AI-directed procedural synthesis in Blender, game-ready output.
-Requires-Python: >=3.10
-Requires-Dist: mcp>=2.0

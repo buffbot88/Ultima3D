@@ -1,8 +1,8 @@
-"""Blender-side worker for asset3d.
+"""Blender-side worker for ultima3d.
 
 Run by the MCP server as:
 
-    blender.exe --background --factory-startup --python asset3d/blender_worker.py
+    blender.exe --background --factory-startup --python ultima3d/blender_worker.py
 
 Protocol: one JSON request per line on stdin, one JSON response per line on
 stdout. Blender logs go to stderr. A single worker instance serves many
@@ -31,6 +31,7 @@ from mathutils import Vector, Euler
 
 STATE = {
     "asset_name": None,
+    "manifest": None,      # AssetState: per-node object registration
     "recipe": None,        # parametric recipe: {node_name: {builder, params}}
     "blueprint": None,     # hierarchical design document
     "last_render_dir": None,
@@ -38,6 +39,13 @@ STATE = {
 
 ASSET_COLLECTION = "ASSET"
 CUTTER_COLLECTION = "ASSET_CUTTERS"
+
+# Detail profiles: the LLM specifies intent; these resolve to Blender density.
+DETAIL_PROFILES = {
+    "draft": {"segments": 8, "bevel_segments": 1, "sphere_segments": 12, "lathe_segments": 12},
+    "game":  {"segments": 16, "bevel_segments": 2, "sphere_segments": 20, "lathe_segments": 16},
+    "hero":  {"segments": 32, "bevel_segments": 3, "sphere_segments": 32, "lathe_segments": 32},
+}
 
 # --------------------------------------------------------------------------
 # Small helpers
@@ -62,6 +70,7 @@ def _clear_scene():
     STATE["asset_name"] = None
     STATE["recipe"] = None
     STATE["blueprint"] = None
+    STATE["manifest"] = None
 
 
 def _asset_objects():
@@ -198,6 +207,52 @@ def _apply_geometry_modifiers(ob):
 # Geometry compiler: deterministic low-level constructors.
 # Each returns the created object, parented into the ASSET collection.
 # --------------------------------------------------------------------------
+
+
+def _asset_children():
+    """Names of mesh objects currently in the ASSET collection (manifest diffing)."""
+    return {o.name for o in _asset_meshes()}
+
+
+def _register_node(manifest, node, before, mat_spec):
+    """Record objects created by a node and apply its material to all of them."""
+    created = sorted(_asset_meshes_names() - before)
+    manifest["objects"][node] = created
+    if mat_spec and created:
+        for name in created:
+            ob = _obj_by_name(name)
+            _ensure_material(ob, mat_spec["name"])
+            _set_principled(ob.data.materials[0], mat_spec.get("color"), mat_spec.get("roughness"),
+                            mat_spec.get("metallic"), mat_spec.get("emission"))
+    return created
+
+
+def _asset_meshes_names():
+    return {o.name for o in _asset_meshes()}
+
+
+def _resolve_detail(builder, kwargs):
+    """Apply the detail profile to density params the builder actually accepts.
+
+    The LLM specifies semantic quality (detail: draft|game|hero); Blender
+    determines geometry. An explicit density param always wins over the profile.
+    """
+    detail = kwargs.pop("detail", None)
+    if not detail:
+        return kwargs
+    profile = DETAIL_PROFILES.get(detail)
+    if not profile:
+        raise ValueError(f"unknown detail {detail!r}; use one of {sorted(DETAIL_PROFILES)}")
+    import inspect as _inspect
+    params = _inspect.signature(builder).parameters
+    kw = dict(kwargs)
+    # builder knob -> profile key
+    knobs = {"vertices": "segments", "segments": "segments",
+             "ring_count": "sphere_segments", "bevel_segments": "bevel_segments"}
+    for knob, pkey in knobs.items():
+        if knob in params and pkey in profile and knob not in kw:
+            kw[knob] = profile[pkey]
+    return kw
 
 
 def _place(ob, name, location=(0, 0, 0), rotation=(0, 0, 0), scale=(1, 1, 1)):
@@ -339,9 +394,20 @@ def create_lathe(name, profile2d, segments=24, location=(0, 0, 0), **_):
         for j in range(segments):
             k = (j + 1) % segments
             bm.faces.new((rings[i][j], rings[i][k], rings[i + 1][k], rings[i + 1][j]))
-    # cap the bottom ring if the profile starts off-axis
-    if profile2d and profile2d[0][0] > 1e-6:
-        pass  # open ends are fine for props; caps add via solidify later if needed
+    # close the ends: n-gon cap for off-axis rings, fan to a pole for near-zero radius
+    def _cap(ring, r, z, at_start):
+        if r > 1e-6:
+            f = bm.faces.new(ring)
+            f.normal_update()
+        else:
+            pole = bm.verts.new((0, 0, z))
+            for j in range(segments):
+                k = (j + 1) % segments
+                pair = (ring[k], ring[j]) if at_start else (ring[j], ring[k])
+                bm.faces.new((*pair, pole))
+    if profile2d:
+        _cap(rings[0], profile2d[0][0], profile2d[0][1], True)
+        _cap(rings[-1], profile2d[-1][0], profile2d[-1][1], False)
     bm.normal_update()
     bm.to_mesh(mesh)
     bm.free()
@@ -562,24 +628,31 @@ def op_build(params):
     if params.get("fresh", True):
         _clear_scene()
     STATE["blueprint"] = blueprint
-    created = []
+    manifest = {"objects": {}, "materials": [], "root_collection": ASSET_COLLECTION}
+    node_tris = {}
     for node_name, spec in recipe.items():
         builder = BUILDERS.get(spec.get("builder"))
         if not builder:
             raise ValueError(f"unknown builder {spec.get('builder')!r} for node {node_name!r}")
-        kwargs = {k: v for k, v in spec.items() if k not in ("builder",)}
+        kwargs = {k: v for k, v in spec.items() if k not in ("builder", "material")}
+        kwargs = _resolve_detail(builder, kwargs)
+        before = _asset_meshes_names()
         ob = builder(node_name, **kwargs)
-        if ob:
-            created.append(ob.name)
-            mat = spec.get("material")
-            if mat:
-                _ensure_material(ob, mat["name"])
-                _set_principled(ob.data.materials[0], mat.get("color"), mat.get("roughness"),
-                                mat.get("metallic"), mat.get("emission"))
+        created = _register_node(manifest, node_name, before, spec.get("material"))
+        if spec.get("material") and spec["material"]["name"] not in manifest["materials"]:
+            manifest["materials"].append(spec["material"]["name"])
+        if spec.get("triangle_budget"):
+            t = sum(_tri_count(_obj_by_name(n)) for n in created)
+            node_tris[node_name] = {"budget": spec["triangle_budget"], "triangles": t,
+                                    "over_budget": t > spec["triangle_budget"], "objects": created}
     STATE["asset_name"] = params.get("name", STATE["asset_name"] or "asset")
     STATE["recipe"] = recipe
+    STATE["manifest"] = manifest
     _join_and_normalize(params.get("join", True))
-    return {"created": created, "object_count": len(_asset_objects()),
+    return {"created": [n for objs in manifest["objects"].values() for n in objs],
+            "manifest": {k: manifest[k] for k in ("objects", "materials", "root_collection")},
+            "node_triangles": node_tris,
+            "object_count": len(_asset_objects()),
             "triangles": sum(_tri_count(o) for o in _asset_objects())}
 
 
@@ -611,33 +684,56 @@ def _join_and_normalize(join):
 
 
 def op_set_material(params):
-    ob = _obj_by_name(params["object"]) if params.get("object") else (_asset_objects()[0] if _asset_objects() else None)
-    if not ob:
+    targets = ([_obj_by_name(params["object"])] if params.get("object")
+               else _asset_meshes())
+    if not targets:
         raise ValueError("nothing to material")
     mat = _simple_mat(params["name"], params.get("color", (0.6, 0.6, 0.6)),
                       params.get("roughness", 0.6), params.get("metallic", 0.0))
-    ob.data.materials.clear()
-    ob.data.materials.append(mat)
-    return {"material": mat.name, "object": ob.name}
+    for ob in targets:
+        ob.data.materials.clear()
+        ob.data.materials.append(mat)
+    return {"material": mat.name, "objects": [ob.name for ob in targets]}
 
 
 def op_inspect(params):
     obs = _asset_meshes()
     if not obs:
         raise ValueError("no asset in scene — call build first")
-    main = obs[0]
     dg = bpy.context.evaluated_depsgraph_get()
-    tris = sum(_tri_count(o) for o in obs)
-    bbox = [main.matrix_world @ Vector(c) for c in main.bound_box]
-    dims = [max(v[i] for v in bbox) - min(v[i] for v in bbox) for i in range(3)]
+    tris = 0
+    verts = 0
+    lo = Vector((math.inf,) * 3)
+    hi = Vector((-math.inf,) * 3)
+    nonmanifold = 0
+    for o in obs:
+        tris += _tri_count(o)
+        verts += len(o.data.vertices)
+        for c in o.bound_box:
+            w = o.matrix_world @ Vector(c)
+            lo = Vector(map(min, lo, w))
+            hi = Vector(map(max, hi, w))
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        nonmanifold += sum(1 for e in bm.edges if not e.is_manifold)
+        bm.free()
+    dims = [hi[i] - lo[i] for i in range(3)]
+    main = obs[0]
     return {
-        "name": main.name,
+        "name": STATE["asset_name"] or main.name,
+        "root_collection": ASSET_COLLECTION,
         "objects": [o.name for o in obs],
+        "object_count": len(obs),
         "triangles": tris,
+        "vertices": verts,
+        "bounds_min": [round(v, 4) for v in lo],
+        "bounds_max": [round(v, 4) for v in hi],
         "dimensions": [round(d, 4) for d in dims],
         "materials": sorted({s.name for o in obs for s in o.data.materials if s}),
+        "non_manifold_edges": nonmanifold,
+        "has_uv": all(bool(o.data.uv_layers) for o in obs),
+        "manifest": STATE["manifest"],
         "modifiers": {o.name: [(m.name, m.type) for m in o.modifiers] for o in obs},
-        "has_uv": bool(main.data.uv_layers) if hasattr(main.data, "uv_layers") else False,
         "recipe": STATE["recipe"],
         "blueprint": STATE["blueprint"],
     }
@@ -690,7 +786,7 @@ def _fit_camera(dist_factor=2.2):
 
 def op_render_views(params):
     views = params.get("views") or list(VIEW_ANGLES.keys())
-    out_dir = os.path.abspath(params.get("dir") or os.path.join(bpy.app.tempdir or "/tmp", "asset3d_renders"))
+    out_dir = os.path.abspath(params.get("dir") or os.path.join(bpy.app.tempdir or "/tmp", "ultima3d_renders"))
     os.makedirs(out_dir, exist_ok=True)
     res = int(params.get("resolution", 512))
     _setup_render(res)
@@ -728,7 +824,6 @@ def op_validate(params):
     obs = _asset_meshes()
     if not obs:
         raise ValueError("nothing to validate")
-    main = obs[0]
     budget = int(params.get("triangle_budget", 8000))
     tris = sum(_tri_count(o) for o in obs)
     checks = []
@@ -739,24 +834,28 @@ def op_validate(params):
         ok = ok and passed
         checks.append({"check": name, "pass": bool(passed), "detail": detail})
 
-    bm = bmesh.new()
-    bm.from_mesh(main.data)
-    dup_result = bmesh.ops.find_doubles(bm, verts=bm.verts, dist=1e-6) if bm.verts else {}
-    dup = len(dup_result.get("targetmap", {}))
-    zero_area = sum(1 for f in bm.faces if f.calc_area() < 1e-9)
-    nonmanifold = sum(1 for e in bm.edges if not e.is_manifold)
-    bm.free()
+    dup = zero_area = nonmanifold = 0
+    for o in obs:
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        dup_result = bmesh.ops.find_doubles(bm, verts=bm.verts, dist=1e-6) if bm.verts else {}
+        dup += len(dup_result.get("targetmap", {}))
+        zero_area += sum(1 for f in bm.faces if f.calc_area() < 1e-9)
+        nonmanifold += sum(1 for e in bm.edges if not e.is_manifold)
+        bm.free()
 
     check("no_duplicate_vertices", dup == 0, f"{dup} doubles")
     check("no_zero_area_faces", zero_area == 0, f"{zero_area} zero-area faces")
     check("triangle_budget", tris <= budget, f"{tris}/{budget}")
-    check("has_uv", bool(main.data.uv_layers), "UV layer present")
-    check("has_material", any(main.data.materials), "at least one material slot")
-    check("scale_applied", all(abs(s - 1.0) < 1e-4 for s in main.scale), str(tuple(main.scale)))
+    check("has_uv", all(bool(o.data.uv_layers) for o in obs), "UV layer on every mesh")
+    check("has_material", all(any(o.data.materials) for o in obs), "every mesh has a material slot")
+    check("scale_applied", all(all(abs(s - 1.0) < 1e-4 for s in o.scale) for o in obs),
+          "all object scales applied")
     check("non_manifold_edges", nonmanifold == 0 or params.get("allow_non_manifold", True),
           f"{nonmanifold} non-manifold edges (ok for stylized hard-surface)")
 
-    return {"pass": ok, "checks": checks, "triangles": tris, "budget": budget}
+    return {"pass": ok, "checks": checks, "triangles": tris, "budget": budget,
+            "object_count": len(obs)}
 
 
 # ---- finalize: clean, UV, LOD, collision, export ---------------------------
@@ -796,7 +895,7 @@ def _uv_unwrap(ob, angle=66):
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
-def _bake_textures(ob, res, channels, out_dir):
+def _bake_textures(ob, res, channels, out_dir, prefix=None):
     """Bake PBR channels via bake-image nodes into shared per-channel PNGs in out_dir."""
     sc = bpy.context.scene
     sc.render.engine = "CYCLES"
@@ -839,7 +938,7 @@ def _bake_textures(ob, res, channels, out_dir):
     out = {}
     try:
         for ch in channels:
-            img = bpy.data.images.new(f"{ob.name}_bake_{ch}", res, res,
+            img = bpy.data.images.new(f"{ob.name}_bake_{ch}_{id(out)}", res, res,
                                       alpha=False, float_buffer=(ch == "normal"))
             bake_imgs[ch] = img
             for i, mat in slots:
@@ -869,7 +968,7 @@ def _bake_textures(ob, res, channels, out_dir):
             if ch == "albedo":
                 sc.render.bake.use_pass_color = False
 
-            path = os.path.join(out_dir, f"{ob.name}_{ch}.png")
+            path = os.path.join(out_dir, f"{prefix or ob.name}_{ch}.png")
             img.filepath_raw = path
             img.file_format = "PNG"
             img.save()
@@ -898,34 +997,43 @@ def op_finalize(params):
     obs = _asset_meshes()
     if not obs:
         raise ValueError("nothing to finalize")
-    ob = obs[0]
-    name = params.get("name") or ob.name
+    name = params.get("name") or (STATE["asset_name"] or obs[0].name)
     budget = int(params.get("triangle_budget", 8000))
     lods = params.get("lods")  # list of budgets; None -> none
     resolution = int(params.get("texture_resolution", 1024))
     channels = params.get("channels", ["albedo", "normal", "roughness"])
     with_collision = params.get("collision", "auto") == "auto"
-    out_dir = os.path.abspath(params.get("dir") or os.path.join(bpy.app.tempdir or "/tmp", "asset3d_export", name))
+    out_dir = os.path.abspath(params.get("dir") or os.path.join(bpy.app.tempdir or "/tmp", "ultima3d_export", name))
     os.makedirs(out_dir, exist_ok=True)
 
-    _clean_mesh(ob)
-    _uv_unwrap(ob)
-    tris_before = _tri_count(ob)
-    if tris_before > budget:
-        ratio = budget / tris_before
-        m = ob.modifiers.new("Decimate", "DECIMATE")
-        m.ratio = max(0.05, ratio)
-        bpy.ops.object.modifier_apply(modifier="Decimate")
-    textures = _bake_textures(ob, resolution, channels, out_dir) if params.get("bake", True) else {}
+    for ob in obs:
+        _clean_mesh(ob)
+        _uv_unwrap(ob)
+    total = sum(_tri_count(o) for o in obs)
+    if total > budget:
+        # proportional decimate on every mesh so the asset total meets the budget
+        ratio = max(0.05, budget / total)
+        for ob in obs:
+            m = ob.modifiers.new("Decimate", "DECIMATE")
+            m.ratio = ratio
+            bpy.ops.object.modifier_apply(modifier="Decimate")
 
-    arm_ob = next((m.object for m in ob.modifiers if m.type == "ARMATURE" and m.object), None)
+    arm_ob = next((m.object for ob in obs for m in ob.modifiers if m.type == "ARMATURE" and m.object), None)
+
+    textures = {}
+    if params.get("bake", True):
+        for ob in obs:
+            prefix = ob.name if len(obs) > 1 else name
+            for ch, p in _bake_textures(ob, resolution, channels, out_dir, prefix=prefix).items():
+                textures[ch] = p
 
     def _export_with_rig(path):
         bpy.ops.object.select_all(action="DESELECT")
-        ob.select_set(True)
+        for ob in obs:
+            ob.select_set(True)
         if arm_ob:
             arm_ob.select_set(True)
-            bpy.context.view_layer.objects.active = ob
+            bpy.context.view_layer.objects.active = obs[0]
         # export_apply is unsafe with armature modifiers; modifiers are already
         # manually applied, so skipping it is safe either way.
         bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True,
@@ -933,36 +1041,41 @@ def op_finalize(params):
 
     paths = {"main": os.path.join(out_dir, f"{name}.glb")}
     _export_with_rig(paths["main"])
+    main_tris = sum(_tri_count(o) for o in obs)  # measured before LOD decimation
 
     if lods:
         for i, lod_budget in enumerate(lods[1:], start=1):  # first entry = main budget
-            t = _tri_count(ob)
+            t = sum(_tri_count(o) for o in obs)
             if t > lod_budget:
-                ratio = lod_budget / t
-                m = ob.modifiers.new(f"LOD{i}_dec", "DECIMATE")
-                m.ratio = max(0.03, ratio)
-                bpy.ops.object.modifier_apply(modifier=f"LOD{i}_dec")
+                ratio = max(0.03, lod_budget / t)
+                for ob in obs:
+                    m = ob.modifiers.new(f"LOD{i}_dec", "DECIMATE")
+                    m.ratio = ratio
+                    bpy.ops.object.modifier_apply(modifier=f"LOD{i}_dec")
             p = os.path.join(out_dir, f"{name}_LOD{i}.glb")
             _export_with_rig(p)
             paths[f"LOD{i}"] = p
 
     if with_collision:
-        # Godot-style: a -Col suffix convex hull object, exported in main glb
-        col = _collision_for(ob)
+        col = _collision_for(obs)
         if col:
-            col.location = ob.location
             p = os.path.join(out_dir, f"{name}_collision.glb")
             bpy.ops.object.select_all(action="DESELECT")
             col.select_set(True)
             bpy.context.view_layer.objects.active = col
             bpy.ops.export_scene.gltf(filepath=p, export_format="GLB", use_selection=True, export_yup=True)
             paths["collision"] = p
+            bpy.data.objects.remove(col, do_unlink=True)
 
     meta = {
         "name": name,
-        "triangles": _tri_count(ob),
+        "triangles": main_tris,
         "budget": budget,
         "lods": lods,
+        "object_count": len(obs),
+        "objects": [o.name for o in obs],
+        "materials": sorted({s.name for o in obs for s in o.data.materials if s}),
+        "manifest": STATE["manifest"],
         "textures": textures,
         "files": paths,
         "recipe": STATE["recipe"],
@@ -977,16 +1090,19 @@ def op_finalize(params):
     return meta
 
 
-def _collision_for(ob):
+def _collision_for(obs):
+    """Convex hull of the union of all asset meshes."""
     bm = bmesh.new()
-    import copy
-    me = ob.data.copy()
-    bm.from_mesh(me)
+    for ob in obs:
+        me = ob.data.copy()
+        me.transform(ob.matrix_world)
+        bm.from_mesh(me)
+        bpy.data.meshes.remove(me)
     bmesh.ops.convex_hull(bm, input=bm.verts)
-    hull_mesh = bpy.data.meshes.new(ob.name + "-Col")
+    hull_mesh = bpy.data.meshes.new(obs[0].name + "-Col")
     bm.to_mesh(hull_mesh)
     bm.free()
-    hull = bpy.data.objects.new(ob.name + "-Col", hull_mesh)
+    hull = bpy.data.objects.new(obs[0].name + "-Col", hull_mesh)
     bpy.context.scene.collection.objects.link(hull)
     _ensure_material(hull, "collision")
     return hull
@@ -1056,9 +1172,15 @@ def op_rig(params):
         e.tail_radius = taper * (1.0 - 0.5 * (i + 1) / max(1, n_bones - 1))
     bpy.ops.object.mode_set(mode="OBJECT")
 
-    # automatic weights with honest fallback
+    # automatic weights with honest fallback; force_fallback exercises the fallback path
     weights_source = "auto"
+    if params.get("force_fallback"):
+        raise_armature_auto = True
+    else:
+        raise_armature_auto = False
     try:
+        if raise_armature_auto:
+            raise RuntimeError("forced fallback (force_fallback=True)")
         bpy.ops.object.select_all(action="DESELECT")
         ob.select_set(True)
         arm_ob.select_set(True)
@@ -1070,13 +1192,114 @@ def op_rig(params):
         ob.parent_type = "OBJECT"
         m0 = ob.modifiers.new("Armature", "ARMATURE")
         m0.object = arm_ob
-        for b in arma.bones:
-            ob.vertex_groups.new(name=b.name)
+        # Empty groups would be dropped by glTF export (no skin), so each vertex
+        # is assigned rigidly (weight 1) to the bone spanning its world Z.
+        import numpy as _np
+        edges_arr = _np.array(joints)
+        mw = _np.array(ob.matrix_world)
+        cos = _np.empty(len(ob.data.vertices) * 3, dtype=_np.float64)
+        ob.data.vertices.foreach_get("co", cos)
+        cos = cos.reshape(-1, 3) @ mw[:, 2][:3] + mw[2, 3]
+        idx = _np.clip(_np.searchsorted(edges_arr, cos) - 1, 0, len(joints) - 2)
+        bone_names = [b.name for b in arma.bones]
+        for b in bone_names:
+            ob.vertex_groups.new(name=b)
+        per_bone = {}
+        for vi, bi in enumerate(idx):
+            per_bone.setdefault(int(bi), []).append(vi)
+        for bi, vis in per_bone.items():
+            ob.vertex_groups[bone_names[bi]].add(vis, 1.0, "REPLACE")
 
     return {"armature": arm_ob.name,
             "bones": [b.name for b in arma.bones],
             "joints_z": [round(z, 4) for z in joints],
             "weights_source": weights_source, "mesh": ob.name}
+
+
+def op_import_glb(params):
+    """Import a GLB into the (cleared) scene for round-trip verification."""
+    path = params.get("path")
+    if not path or not os.path.isfile(path):
+        raise ValueError(f"no such file: {path!r}")
+    before = len(bpy.data.objects)
+    # TEMPERANCE avoids the importer's BLENDER-heuristic bind-pose helper object
+    bpy.ops.import_scene.gltf(filepath=path, bone_heuristic="TEMPERANCE")
+    imported = list(bpy.data.objects)[before:]
+    # belt and braces: remove importer helper leftovers (e.g. 'Icosphere') with no skin role
+    for ob in list(imported):
+        if ob.type == "MESH" and ob.name.startswith("Icosphere") and not ob.vertex_groups:
+            bpy.data.objects.remove(ob, do_unlink=True)
+            imported.remove(ob)
+    # imported objects land in the scene; register meshes as the asset
+    c = _col(make=True)
+    for ob in imported:
+        for uc in list(ob.users_collection):
+            uc.objects.unlink(ob)
+        c.objects.link(ob)
+    STATE["manifest"] = None
+    insp = op_inspect({})
+    arm = next((o for o in c.objects if o.type == "ARMATURE"), None)
+    insp["armature"] = arm.name if arm else None
+    insp["bones"] = [b.name for b in arm.data.bones] if arm else []
+    return insp
+
+
+def _probe_deform(params):
+    """Test probe: rotate a bone and confirm mesh vertices move."""
+    meshes = _asset_meshes()
+    arm = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
+    if not meshes or not arm:
+        return {"deformed": False, "max_disp": 0.0}
+    ob = meshes[0]
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = ob.evaluated_get(dg)
+    me0 = ev.to_mesh()
+    before = [v.co.copy() for v in me0.vertices]
+    ev.to_mesh_clear()
+    bone_name = params.get("bone")
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    pb = arm.pose.bones.get(bone_name)
+    pb.rotation_mode = "XYZ"  # pose bones default to quaternion; euler assignment is ignored otherwise
+    pb.rotation_euler = (0.5, 0, 0)
+    bpy.context.view_layer.update()
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = ob.evaluated_get(dg)
+    me1 = ev.to_mesh()
+    max_disp = max((a - b).length for a, b in zip(before, (v.co for v in me1.vertices))) if before else 0.0
+    ev.to_mesh_clear()
+    pb.rotation_euler = (0, 0, 0)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.update()
+    return {"deformed": max_disp > 1e-4, "max_disp": max_disp}
+
+
+def _probe_vertex_groups(params):
+    meshes = _asset_meshes()
+    if not meshes:
+        return {"count": 0}
+    return {"count": len(meshes[0].vertex_groups)}
+
+
+def _probe_import_meta(params):
+    ic = bpy.data.objects.get("Icosphere")
+    if not ic:
+        return {"present": False}
+    return {"present": True, "hide_render": ic.hide_render, "hide_viewport": ic.hide_viewport,
+            "hide_get": ic.hide_get(), "users": ic.data.users, "user_zero": ic.data.users == 0,
+            "verts": len(ic.data.vertices)}
+
+
+def _probe_scene(params):
+    return [{"name": o.name, "type": o.type, "dims": list(o.dimensions),
+             "loc": [round(v, 3) for v in o.location], "scale": list(o.scale),
+             "parent": o.parent.name if o.parent else None}
+            for o in _asset_objects()]
+
+
+def _probe_scale(params):
+    ob = bpy.data.objects.get(params.get("object", ""))
+    return list(ob.scale) if ob else [0, 0, 0]
 
 
 def op_save_recipe(params):
@@ -1113,6 +1336,12 @@ OPS = {
     "validate": op_validate,
     "finalize": op_finalize,
     "rig": op_rig,
+    "import_glb": op_import_glb,
+    "_probe_deform": _probe_deform,
+    "_probe_vertex_groups": _probe_vertex_groups,
+    "_probe_import_meta": _probe_import_meta,
+    "_probe_scene": _probe_scene,
+    "_probe_scale": _probe_scale,
     "save_recipe": op_save_recipe,
     "load_recipe": op_load_recipe,
 }
@@ -1134,7 +1363,7 @@ def _handle(line):
 
 
 def main():
-    print("asset3d worker ready", file=sys.stderr, flush=True)
+    print("ultima3d worker ready", file=sys.stderr, flush=True)
     for line in sys.stdin:
         line = line.strip()
         if not line:

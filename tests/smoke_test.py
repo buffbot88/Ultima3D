@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
-WORKER = "asset3d/blender_worker.py"
+WORKER = "ultima3d/blender_worker.py"
 
 proc = subprocess.Popen(
     [BLENDER, "--background", "--factory-startup", "--python", WORKER],
