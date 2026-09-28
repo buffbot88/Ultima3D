@@ -17,7 +17,7 @@ Use a stdio MCP configuration pointing at this repository's `godot_mcp/server.py
   "mcpServers": {
     "godot": {
       "command": "python",
-      "args": ["/absolute/path/to/TWOR/godot_mcp/server.py"]
+      "args": ["/absolute/path/to/Ultima3D/godot_mcp/server.py"]
     }
   }
 }
