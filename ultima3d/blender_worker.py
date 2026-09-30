@@ -283,6 +283,25 @@ def _resolve_detail(builder, kwargs):
     return kw
 
 
+def _builder_params(builder):
+    """Named parameters a builder accepts, excluding its name and any **catch-all."""
+    import inspect as _inspect
+    params = _inspect.signature(builder).parameters
+    return sorted(n for n, p in params.items()
+                  if n != "name" and p.kind is not _inspect.Parameter.VAR_KEYWORD)
+
+
+def _unrecognized_params(builder, kwargs):
+    """Recipe keys this builder will silently swallow through its **_ catch-all.
+
+    Every builder ends in **_, so a misspelled parameter is dropped without complaint and
+    the asset is built with the default instead -- success that looks like success.
+    """
+    accepted = set(_builder_params(builder))
+    # recipe-level keys the compiler consumes itself rather than passing to the builder
+    return sorted(k for k in kwargs if k not in accepted and k not in RECIPE_META_KEYS)
+
+
 def _place(ob, name, location=(0, 0, 0), rotation=(0, 0, 0), scale=(1, 1, 1)):
     ob.name = name
     ob.location = location
@@ -663,12 +682,19 @@ def op_build(params):
     STATE["blueprint"] = blueprint
     manifest = {"objects": {}, "materials": [], "root_collection": ASSET_COLLECTION}
     node_tris = {}
+    ignored_params = {}
     for node_name, spec in recipe.items():
         builder = BUILDERS.get(spec.get("builder"))
         if not builder:
             raise ValueError(f"unknown builder {spec.get('builder')!r} for node {node_name!r}")
         kwargs = {k: v for k, v in spec.items() if k not in ("builder", "material")}
         kwargs = _resolve_detail(builder, kwargs)
+        unknown = _unrecognized_params(builder, kwargs)
+        if unknown:
+            # Name the accepted parameters too, so the caller can fix it in one step instead
+            # of guessing again.
+            ignored_params[node_name] = {"ignored": unknown,
+                                         "accepted": _builder_params(builder)}
         before = _asset_meshes_names()
         ob = builder(node_name, **kwargs)
         created = _register_node(manifest, node_name, before, spec.get("material"))
@@ -685,6 +711,7 @@ def op_build(params):
     return {"created": [n for objs in manifest["objects"].values() for n in objs],
             "manifest": {k: manifest[k] for k in ("objects", "materials", "root_collection")},
             "node_triangles": node_tris,
+            "ignored_params": ignored_params,
             "object_count": len(_asset_objects()),
             "triangles": sum(_tri_count(o) for o in _asset_objects())}
 
