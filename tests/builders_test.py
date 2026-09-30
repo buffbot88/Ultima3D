@@ -5,10 +5,9 @@ Curve-authored builders (`pipe`, `curve`) used to create CURVE objects that the 
 manifest diff ignored, so build reported a scene while inspect raised "no asset in scene"
 and validate raised "nothing to validate".
 """
-# Per-builder geometry checks are reported but not asserted: some bmesh-authored builders
-# (`arch`, `extrusion`, `lathe`, `roof`, `weapon_blade`) emit meshes with no UV layer, and
-# `stairs` emits doubles. Those are pre-existing and independent of builder registration —
-# in a multi-node asset the join supplies the UV map, so `validate_asset` passes.
+# Every builder must also pass validate_asset on its own: bmesh-authored builders used to
+# arrive with no UV layer, and composite builders that stack boxes face-to-face (stairs) used
+# to report duplicate vertices. Both are repaired when the asset is normalized after assembly.
 import json
 import os
 import subprocess
@@ -69,7 +68,6 @@ def call(op, params=None):
 print("ping:", call("ping")["blender"])
 
 failures = []
-quality = []
 for builder in BUILDERS:
     spec = {"builder": builder, "material": MATERIAL, **REQUIRED_ARGS.get(builder, {})}
     built = call("build", {"recipe": {"node": spec}, "name": builder, "join": True})
@@ -95,13 +93,11 @@ for builder in BUILDERS:
     if "error" in validated:
         failures.append((builder, f"validate: {validated['error']}"))
         continue
-    if validated["pass"]:
-        print(f"  [ok]   {builder:16s} objects={len(registered)} tris={inspected['triangles']}")
-    else:
-        bad = [c["check"] for c in validated["checks"] if not c["pass"]]
-        quality.append((builder, bad))
-        print(f"  [ok]   {builder:16s} objects={len(registered)} tris={inspected['triangles']}"
-              f"  (quality: {', '.join(bad)})")
+    failed_checks = [c["check"] for c in validated["checks"] if not c["pass"]]
+    if failed_checks:
+        failures.append((builder, f"validate failed: {failed_checks}"))
+        continue
+    print(f"  [ok] {builder:16s} objects={len(registered)} tris={inspected['triangles']}")
 
 proc.terminate()
 
@@ -110,9 +106,4 @@ if failures:
     for builder, why in failures:
         print(f"  - {builder}: {why}")
     sys.exit(1)
-
 print(f"\nBUILDER SWEEP OK ({len(BUILDERS)} builders register, inspect and validate)")
-if quality:
-    print("Pre-existing geometry-quality notes (not asserted):")
-    for builder, bad in quality:
-        print(f"  - {builder}: {', '.join(bad)}")
