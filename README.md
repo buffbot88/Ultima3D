@@ -185,6 +185,7 @@ git add blender_mcp              # record the new submodule commit
 pip install -e .
 python tests/smoke_test.py      # end-to-end: build → render → validate → finalize → rig → re-finalize
 python tests/roundtrip_test.py  # build → rig (auto+fallback) → finalize → clear → re-import GLB → compare vs manifest
+python tests/builders_test.py   # sweep all 26 builders: each registers, inspects and validates
 ```
 
 Config (env): `ULTIMA3D_BLENDER` (Blender executable), `ULTIMA3D_OUT` (output dir).

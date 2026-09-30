@@ -203,6 +203,22 @@ def _apply_geometry_modifiers(ob):
                 ob.modifiers.remove(m)
 
 
+def _convert_to_mesh(ob):
+    """Turn a curve/text object into a mesh in place.
+
+    Every downstream stage (manifest diffing, inspect, validate, finalize) walks
+    _asset_meshes(), which is MESH-only, so curve-authored builders must be
+    converted or they are invisible to the rest of the pipeline.
+    """
+    if ob.type == "MESH":
+        return ob
+    bpy.ops.object.select_all(action="DESELECT")
+    ob.select_set(True)
+    bpy.context.view_layer.objects.active = ob
+    bpy.ops.object.convert(target="MESH")
+    return bpy.context.view_layer.objects.active
+
+
 # --------------------------------------------------------------------------
 # Geometry compiler: deterministic low-level constructors.
 # Each returns the created object, parented into the ASSET collection.
@@ -352,10 +368,15 @@ def create_pipe(name, path, radius=0.05, segments=12, location=(0, 0, 0), **_):
     sp.points.add(len(path) - 1)
     for i, p in enumerate(path):
         sp.points[i].co = (*p, 1.0)
-    bevel = cu.bevel_depth = float(radius)
+    cu.bevel_depth = float(radius)
     cu.bevel_resolution = max(1, segments // 4)
+    if hasattr(cu, "use_uv_as_generated"):
+        cu.use_uv_as_generated = True
     ob = bpy.data.objects.new(name, cu)
     bpy.context.scene.collection.objects.link(ob)
+    # A swept curve only lives in the CURVE namespace; convert it so the sweep is a
+    # real mesh and downstream ops (inspect, validate, finalize, join) can see it.
+    ob = _convert_to_mesh(ob)
     _shade_smooth_auto(ob)
     return _place(ob, name, location)
 
