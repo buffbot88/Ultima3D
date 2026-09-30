@@ -1,9 +1,12 @@
 """Direct end-to-end smoke test of the Blender worker (no MCP layer)."""
 import json
+import os
 import subprocess
 import sys
 
-BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
+BLENDER = os.environ.get(
+    "ULTIMA3D_BLENDER",
+    r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe")
 WORKER = "ultima3d/blender_worker.py"
 
 proc = subprocess.Popen(
@@ -71,7 +74,6 @@ r = call("finalize", {"name": "medieval_mailbox", "triangle_budget": 8000,
                       "bake": True, "dir": "output/smoke/export"})
 print("finalize files:", list(r["files"].keys()))
 print("textures:", r["textures"])
-import os
 for ch, p in r["textures"].items():
     assert os.path.isfile(p) and os.path.getsize(p) > 0, f"missing/empty bake: {ch} -> {p}"
 print("bake PNGs verified:", list(r["textures"].keys()))
