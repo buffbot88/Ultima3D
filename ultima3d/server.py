@@ -130,12 +130,14 @@ def create_3d(
 
 
 @mcp.tool()
-def refine_asset(params: dict) -> str:
+def refine_asset(changes: dict | None = None, recipe: dict | None = None) -> str:
     """Parametric refinement: modify recipe params and rebuild.
 
     Pass {"changes": {"node.param": new_value, ...}} using dotted node names from the last
-    build (e.g. {"roof.height": 0.5, "band_01.scale_z": 1.35}); unknown params are ignored
-    with a note. Or pass {"recipe": {...}} to replace the whole recipe.
+    build (e.g. {"roof.height": 0.5, "body.radius": 0.5}). A change naming a real node but a
+    parameter its builder does not accept is reported under "ignored", not "applied"; the
+    response lists the parameters the builder does accept. Or pass {"recipe": {...}} to
+    replace the whole recipe.
     """
     try:
         inspect = _w.call("inspect", {})
@@ -145,11 +147,10 @@ def refine_asset(params: dict) -> str:
     except (RuntimeError, ToolError):
         # empty scene: allow a full-recipe refine as the initial build
         last_recipe, name, blueprint = {}, "asset", None
-    recipe = params.get("recipe")
     if recipe is None:
         recipe = json.loads(json.dumps(last_recipe))
         applied, ignored = [], []
-        for dotted, value in (params.get("changes") or {}).items():
+        for dotted, value in (changes or {}).items():
             node, _, key = dotted.partition(".")
             if node in recipe and key:
                 recipe[node][key] = value
@@ -158,8 +159,13 @@ def refine_asset(params: dict) -> str:
                 ignored.append(dotted)
         result = _w.call("build", {"recipe": recipe, "name": name,
                                    "blueprint": blueprint, "join": True})
-        result["applied"] = applied
-        result["ignored"] = ignored
+        # A change can name a real node yet a parameter the builder does not accept; the
+        # builder swallows it and keeps the previous geometry. Report those honestly.
+        dropped = {f"{node}.{key}"
+                   for node, info in (result.get("ignored_params") or {}).items()
+                   for key in info["ignored"]}
+        result["applied"] = [d for d in applied if d not in dropped]
+        result["ignored"] = ignored + sorted(dropped)
     else:
         result = _w.call("build", {"recipe": recipe, "name": name,
                                    "blueprint": blueprint, "join": True})
