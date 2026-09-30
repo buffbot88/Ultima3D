@@ -186,6 +186,9 @@ def _tri_count(ob):
 
 
 GEOMETRY_MODIFIERS = ("BEVEL", "SOLIDIFY", "ARRAY", "BOOLEAN", "SUBSURF", "DISPLACE")
+# Tolerance shared by the vertex-merge pass and validate's duplicate-vertex check, so the
+# assembled asset cannot satisfy one and fail the other.
+DOUBLE_DIST = 1e-6
 
 
 def _apply_geometry_modifiers(ob):
@@ -217,6 +220,16 @@ def _convert_to_mesh(ob):
     bpy.context.view_layer.objects.active = ob
     bpy.ops.object.convert(target="MESH")
     return bpy.context.view_layer.objects.active
+
+
+def _merge_doubles(ob, dist=DOUBLE_DIST):
+    """Weld vertices closer than dist so parts that merely touch are not duplicate geometry."""
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=dist)
+    bm.to_mesh(ob.data)
+    bm.free()
+    ob.data.update()
 
 
 # --------------------------------------------------------------------------
@@ -701,6 +714,13 @@ def _join_and_normalize(join):
         bbox = [main.matrix_world @ Vector(c) for c in main.bound_box]
         minz = min(v.z for v in bbox)
         main.location.z -= minz
+    # Normalize the assembled asset so validate holds for every builder, not just the
+    # primitive-based ones: composites stack boxes that touch face-to-face (stairs), and
+    # bmesh-authored meshes arrive with no UV layer at all.
+    for o in _asset_meshes():
+        _merge_doubles(o)
+        if not o.data.uv_layers:
+            _uv_unwrap(o)
 
 
 def op_set_material(params):
@@ -858,7 +878,7 @@ def op_validate(params):
     for o in obs:
         bm = bmesh.new()
         bm.from_mesh(o.data)
-        dup_result = bmesh.ops.find_doubles(bm, verts=bm.verts, dist=1e-6) if bm.verts else {}
+        dup_result = bmesh.ops.find_doubles(bm, verts=bm.verts, dist=DOUBLE_DIST) if bm.verts else {}
         dup += len(dup_result.get("targetmap", {}))
         zero_area += sum(1 for f in bm.faces if f.calc_area() < 1e-9)
         nonmanifold += sum(1 for e in bm.edges if not e.is_manifold)
