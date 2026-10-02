@@ -189,6 +189,9 @@ GEOMETRY_MODIFIERS = ("BEVEL", "SOLIDIFY", "ARRAY", "BOOLEAN", "SUBSURF", "DISPL
 # Tolerance shared by the vertex-merge pass and validate's duplicate-vertex check, so the
 # assembled asset cannot satisfy one and fail the other.
 DOUBLE_DIST = 1e-6
+# Recipe keys the compiler consumes itself, so they are not builder parameters.
+# (`detail` is popped by _resolve_detail before these checks run.)
+RECIPE_META_KEYS = ("triangle_budget",)
 
 
 def _apply_geometry_modifiers(ob):
