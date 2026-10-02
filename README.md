@@ -5,9 +5,11 @@ Blender worker owns **mechanics and verification**. Exposes 13 high-level MCP to
 hundreds of Blender buttons.
 
 **Milestones.** v0.1 — deterministic procedural asset compiler proven.
-v0.2 (this tree) — trustworthy game-asset compiler: measurements are asset-wide, budgets
+v0.2 — trustworthy game-asset compiler: measurements are asset-wide, budgets
 are enforceable, materials are consistent, rigs are tested, and exported artifacts are
 round-trip verified.
+v0.3 (this tree) — export-only finalize (decimation never touches the scene, reruns are
+idempotent) and bounded worker calls (a hung Blender is killed past a deadline).
 
 ```text
 LLM (any MCP client)
@@ -189,7 +191,9 @@ python tests/builders_test.py   # sweep all 26 builders: each registers, inspect
 python tests/params_test.py     # recipe/refine parameter reporting, over the MCP server itself
 ```
 
-Config (env): `ULTIMA3D_BLENDER` (Blender executable), `ULTIMA3D_OUT` (output dir).
+Config (env): `ULTIMA3D_BLENDER` (Blender executable), `ULTIMA3D_OUT` (output dir),
+`ULTIMA3D_CALL_TIMEOUT` (per-call worker deadline in seconds, default 600 — a hung
+worker is killed past it, losing its scene state).
 
 Requires **Blender 5.2 LTS** and **mcp >= 2.0**. Note that `mcp` 2.x renamed `FastMCP` to
 `MCPServer`; `mcp.server.fastmcp` deliberately does not resolve.

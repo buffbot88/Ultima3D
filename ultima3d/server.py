@@ -9,6 +9,9 @@ Config via env:
     ULTIMA3D_BLENDER   path to blender executable
                       (default: C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe)
     ULTIMA3D_OUT       output directory for renders/exports (default: ./output)
+    ULTIMA3D_CALL_TIMEOUT
+                      per-call deadline in seconds for worker responses
+                      (default: 600); a hung worker is killed past it
 """
 
 from __future__ import annotations
@@ -16,8 +19,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 from mcp.server import MCPServer
@@ -32,6 +38,7 @@ BLENDER = os.environ.get(
     r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe",
 )
 OUT_DIR = Path(os.environ.get("ULTIMA3D_OUT", Path.cwd() / "output"))
+CALL_TIMEOUT = float(os.environ.get("ULTIMA3D_CALL_TIMEOUT", "600"))
 
 mcp = MCPServer("ultima3d")
 
@@ -42,9 +49,12 @@ mcp = MCPServer("ultima3d")
 
 
 class Worker:
+    """Persistent blender --background process; a reader thread feeds a line queue."""
     def __init__(self):
         self.proc: subprocess.Popen | None = None
         self._id = 0
+        self._lines: queue.Queue[str] = queue.Queue()
+        self._reader: threading.Thread | None = None
 
     def _start(self):
         if not Path(BLENDER).is_file():
@@ -54,15 +64,42 @@ class Worker:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", bufsize=1,
         )
+        # Fresh queue per process so late lines from a dead worker never pollute.
+        self._lines = queue.Queue()
+        self._reader = threading.Thread(target=self._read_loop,
+                                        args=(self.proc, self._lines),
+                                        daemon=True, name="ultima3d-reader")
+        self._reader.start()
         # worker prints a banner to stderr; first request confirms liveness
         self.call("ping")
+
+    @staticmethod
+    def _read_loop(proc, lines):
+        for raw in proc.stdout:
+            lines.put(raw)
+        # EOF: the worker died; in-flight callers notice via the died check below.
 
     def ensure(self):
         if self.proc is None or self.proc.poll() is not None:
             self._start()
         return self
 
-    def call(self, op: str, params: dict | None = None) -> dict:
+    def _kill(self):
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.kill()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+        self.proc = None  # ensure() restarts fresh on the next call
+
+    def _timeout_error(self, op: str, timeout: float) -> ToolError:
+        return ToolError(
+            f"{op} timed out after {timeout:g}s waiting for the blender worker; "
+            "the hung worker was terminated, so its scene/recipe state is lost and "
+            "the next call restarts fresh. Raise ULTIMA3D_CALL_TIMEOUT for long bakes.")
+
+    def call(self, op: str, params: dict | None = None, timeout: float = CALL_TIMEOUT) -> dict:
         self.ensure()
         self._id += 1
         rid = self._id
@@ -74,10 +111,18 @@ class Worker:
             self._start()
             self.proc.stdin.write(line + "\n")
             self.proc.stdin.flush()
+        deadline = time.monotonic() + timeout
         while True:
-            raw = self.proc.stdout.readline()
-            if not raw:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._kill()
+                raise self._timeout_error(op, timeout)
+            if self.proc.poll() is not None and self._lines.empty():
                 raise ToolError("blender worker died; check blender stderr")
+            try:
+                raw = self._lines.get(timeout=min(remaining, 5.0))
+            except queue.Empty:
+                continue
             raw = raw.strip()
             if not raw.startswith("@JSON@"):
                 continue  # Blender progress/log noise on stdout

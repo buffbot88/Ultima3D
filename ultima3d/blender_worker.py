@@ -1080,62 +1080,97 @@ def op_finalize(params):
         _clean_mesh(ob)
         _uv_unwrap(ob)
     total = sum(_tri_count(o) for o in obs)
-    if total > budget:
-        # proportional decimate on every mesh so the asset total meets the budget
-        ratio = max(0.05, budget / total)
-        for ob in obs:
-            m = ob.modifiers.new("Decimate", "DECIMATE")
-            m.ratio = ratio
-            bpy.ops.object.modifier_apply(modifier="Decimate")
 
     arm_ob = next((m.object for ob in obs for m in ob.modifiers if m.type == "ARMATURE" and m.object), None)
 
-    textures = {}
-    if params.get("bake", True):
+    # Finalize decimates temporary copies, never the scene: originals keep their
+    # geometry and modifier stacks, so inspect/validate stay honest afterwards and a
+    # second finalize cannot compound the reduction. Copies take the originals' object
+    # and mesh names (originals renamed out of the way) so exported GLBs are unchanged.
+    created = []
+    try:
         for ob in obs:
-            prefix = ob.name if len(obs) > 1 else name
-            for ch, p in _bake_textures(ob, resolution, channels, out_dir, prefix=prefix).items():
-                textures[ch] = p
+            if ob.data.shape_keys:
+                raise ValueError(f"finalize does not support shape keys (object {ob.name!r})")
+            rec = {"cp": None, "data": None, "orig": ob,
+                   "name": ob.name, "data_name": ob.data.name}
+            created.append(rec)  # tracked before any mutation, so mid-setup failures restore
+            ob.name = rec["name"] + "__src"
+            ob.data.name = rec["data_name"] + "__src"
+            cp = ob.copy()
+            cp.data = ob.data.copy()
+            cp.name = rec["name"]
+            cp.data.name = rec["data_name"]
+            bpy.context.scene.collection.objects.link(cp)
+            rec["cp"], rec["data"] = cp, cp.data
+        copies = [r["cp"] for r in created]
 
-    def _export_with_rig(path):
-        bpy.ops.object.select_all(action="DESELECT")
-        for ob in obs:
-            ob.select_set(True)
-        if arm_ob:
-            arm_ob.select_set(True)
-            bpy.context.view_layer.objects.active = obs[0]
-        # export_apply is unsafe with armature modifiers; modifiers are already
-        # manually applied, so skipping it is safe either way.
-        bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True,
-                                  export_yup=True)
+        def _decimate(targets, mod_name, ratio):
+            for ob in targets:
+                m = ob.modifiers.new(mod_name, "DECIMATE")  # appended last: order preserved
+                m.ratio = ratio
+                bpy.ops.object.select_all(action="DESELECT")
+                ob.select_set(True)
+                bpy.context.view_layer.objects.active = ob
+                bpy.ops.object.modifier_apply(modifier=mod_name)
 
-    paths = {"main": os.path.join(out_dir, f"{name}.glb")}
-    _export_with_rig(paths["main"])
-    main_tris = sum(_tri_count(o) for o in obs)  # measured before LOD decimation
+        if total > budget:
+            # proportional decimate on every copy so the asset total meets the budget
+            _decimate(copies, "Decimate", max(0.05, budget / total))
 
-    if lods:
-        for i, lod_budget in enumerate(lods[1:], start=1):  # first entry = main budget
-            t = sum(_tri_count(o) for o in obs)
-            if t > lod_budget:
-                ratio = max(0.03, lod_budget / t)
-                for ob in obs:
-                    m = ob.modifiers.new(f"LOD{i}_dec", "DECIMATE")
-                    m.ratio = ratio
-                    bpy.ops.object.modifier_apply(modifier=f"LOD{i}_dec")
-            p = os.path.join(out_dir, f"{name}_LOD{i}.glb")
-            _export_with_rig(p)
-            paths[f"LOD{i}"] = p
+        textures = {}
+        if params.get("bake", True):
+            for ob in copies:
+                prefix = ob.name if len(obs) > 1 else name
+                for ch, p in _bake_textures(ob, resolution, channels, out_dir, prefix=prefix).items():
+                    textures[ch] = p
 
-    if with_collision:
-        col = _collision_for(obs)
-        if col:
-            p = os.path.join(out_dir, f"{name}_collision.glb")
+        def _export_with_rig(path):
             bpy.ops.object.select_all(action="DESELECT")
-            col.select_set(True)
-            bpy.context.view_layer.objects.active = col
-            bpy.ops.export_scene.gltf(filepath=p, export_format="GLB", use_selection=True, export_yup=True)
-            paths["collision"] = p
-            bpy.data.objects.remove(col, do_unlink=True)
+            for ob in copies:
+                ob.select_set(True)
+            if arm_ob:
+                arm_ob.select_set(True)
+                bpy.context.view_layer.objects.active = copies[0]
+            # export_apply is unsafe with armature modifiers; modifiers are already
+            # manually applied, so skipping it is safe either way.
+            bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True,
+                                      export_yup=True)
+
+        paths = {"main": os.path.join(out_dir, f"{name}.glb")}
+        _export_with_rig(paths["main"])
+        main_tris = sum(_tri_count(o) for o in copies)  # measured before LOD decimation
+
+        if lods:
+            for i, lod_budget in enumerate(lods[1:], start=1):  # first entry = main budget
+                t = sum(_tri_count(o) for o in copies)
+                if t > lod_budget:
+                    _decimate(copies, f"LOD{i}_dec", max(0.03, lod_budget / t))
+                p = os.path.join(out_dir, f"{name}_LOD{i}.glb")
+                _export_with_rig(p)
+                paths[f"LOD{i}"] = p
+
+        if with_collision:
+            col = _collision_for(copies)
+            if col:
+                p = os.path.join(out_dir, f"{name}_collision.glb")
+                bpy.ops.object.select_all(action="DESELECT")
+                col.select_set(True)
+                bpy.context.view_layer.objects.active = col
+                bpy.ops.export_scene.gltf(filepath=p, export_format="GLB", use_selection=True, export_yup=True)
+                paths["collision"] = p
+                bpy.data.objects.remove(col, do_unlink=True)
+    finally:
+        # clone objects first, then their zero-user mesh datablocks, then names back
+        for rec in created:
+            if rec["cp"] is not None:
+                bpy.data.objects.remove(rec["cp"], do_unlink=True)
+        for rec in created:
+            if rec["data"] is not None and rec["data"].users == 0:
+                bpy.data.meshes.remove(rec["data"])
+        for rec in created:
+            rec["orig"].name = rec["name"]
+            rec["orig"].data.name = rec["data_name"]
 
     meta = {
         "name": name,
@@ -1372,6 +1407,18 @@ def _probe_scale(params):
     return list(ob.scale) if ob else [0, 0, 0]
 
 
+def _probe_object_tris(params):
+    """Per-object triangle counts of the asset; test instrumentation for which objects changed."""
+    return {o.name: _tri_count(o) for o in _asset_meshes()}
+
+
+def _probe_sleep(params):
+    """Sleep without responding; test instrumentation for the server-side call timeout."""
+    import time as _time
+    _time.sleep(min(float(params.get("seconds", 60)), 300))
+    return {"slept": True}
+
+
 def op_save_recipe(params):
     path = params.get("path")
     if not path:
@@ -1412,6 +1459,8 @@ OPS = {
     "_probe_import_meta": _probe_import_meta,
     "_probe_scene": _probe_scene,
     "_probe_scale": _probe_scale,
+    "_probe_object_tris": _probe_object_tris,
+    "_probe_sleep": _probe_sleep,
     "save_recipe": op_save_recipe,
     "load_recipe": op_load_recipe,
 }

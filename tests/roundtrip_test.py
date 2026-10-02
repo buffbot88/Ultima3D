@@ -108,16 +108,34 @@ groups = call("_probe_vertex_groups", {})
 check("fallback created vertex groups", groups["count"] >= 3, f'{groups["count"]} groups')
 
 # ---- finalize ---------------------------------------------------------------
-r_fin = call("finalize", {"name": "roundtrip_crate", "triangle_budget": 8000,
-                          "lods": [8000, 4000], "collision": "auto",
+pre_finalize_tris = call("inspect", {})["triangles"]
+pre_obj_tris = call("_probe_object_tris", {})
+r_fin = call("finalize", {"name": "roundtrip_crate", "triangle_budget": 3000,
+                          "lods": [3000, 1200], "collision": "auto",
                           "texture_resolution": 128,
                           "channels": ["albedo", "normal", "roughness"], "bake": True,
                           "dir": EXPORT_DIR})
 print("finalize:", r_fin["object_count"], "objects,", r_fin["triangles"], "tris,", list(r_fin["files"]))
-check("finalize under budget", r_fin["triangles"] <= 8000, f'{r_fin["triangles"]}/8000')
+check("finalize under budget", r_fin["triangles"] <= 3000, f'{r_fin["triangles"]}/3000')
 check("collision asset exists", "collision" in r_fin["files"])
 for ch, p in r_fin["textures"].items():
     check(f"bake {ch} exists", os.path.isfile(p) and os.path.getsize(p) > 0, p)
+
+# Finalize must be export-only: decimation happens on temporary copies, so the
+# in-memory scene keeps its density and a second finalize cannot compound.
+post_finalize_tris = call("inspect", {})["triangles"]
+check("finalize leaves the scene untouched",
+      post_finalize_tris == pre_finalize_tris,
+      f'{pre_finalize_tris} -> {post_finalize_tris} tris')
+r_fin2 = call("finalize", {"name": "roundtrip_crate", "triangle_budget": 3000,
+                           "lods": [3000, 1200], "collision": "none", "bake": False,
+                           "texture_resolution": 64, "dir": EXPORT_DIR + "_second"})
+check("second finalize reports identical triangles",
+      r_fin2["triangles"] == r_fin["triangles"],
+      f'{r_fin2["triangles"]} vs {r_fin["triangles"]}')
+check("second finalize leaves the scene untouched",
+      call("inspect", {})["triangles"] == pre_finalize_tris)
+
 with open(os.path.join(EXPORT_DIR, "asset.json")) as f:
     meta = json.load(f)
 check("asset.json records manifest", meta.get("manifest") is not None)
@@ -130,8 +148,18 @@ imp = call("import_glb", {"path": r_fin["files"]["main"]})
 print("imported:", imp["object_count"], "objects,", imp["triangles"], "tris, dims", imp["dimensions"])
 check("reimport: mesh count survives", imp["object_count"] == r_fin["object_count"],
       f'{imp["object_count"]} vs {r_fin["object_count"]}')
+check("reimport: node names match the asset",
+      set(imp["objects"]) == set(r_fin["objects"]),
+      f'{sorted(imp["objects"])} vs {sorted(r_fin["objects"])}')
 check("reimport: materials survive", len(imp["materials"]) == len(r_fin["materials"]),
       f'{imp["materials"]} vs {r_fin["materials"]}')
+# Aggregate counts alone would not prove per-object decimation hit several meshes
+# (bpy.ops applies to the active/selected object, not to every target by name).
+imp_obj_tris = call("_probe_object_tris", {})
+budget_shrunk = [n for n, t in imp_obj_tris.items()
+                 if t < pre_obj_tris.get(n, 0) * 0.9]
+check("budget decimation applied to >=2 meshes", len(budget_shrunk) >= 2,
+      str({n: (pre_obj_tris.get(n), imp_obj_tris[n]) for n in budget_shrunk}))
 check("reimport: triangle tolerance ±5%",
       abs(imp["triangles"] - pre_tris) <= pre_tris * 0.05, f'{imp["triangles"]} vs {pre_tris}')
 check("reimport: dimensions tolerance ±5%",
@@ -142,7 +170,21 @@ check("reimport: rig survives", imp.get("armature") is not None and len(imp["bon
 check("reimport: transforms sane (scale ~1)",
       all(abs(s - 1.0) < 1e-3 for o in call("inspect", {})["objects"] for s in call("_probe_scale", {"object": o})))
 
+# LOD1 must be genuinely decimated across several meshes, not just in aggregate
+call("clear", {})
+imp_lod = call("import_glb", {"path": r_fin["files"]["LOD1"]})
+check("LOD1 reimports: mesh count survives", imp_lod["object_count"] == r_fin["object_count"],
+      f'{imp_lod["object_count"]} vs {r_fin["object_count"]}')
+check("LOD1 under its budget", imp_lod["triangles"] <= 1200 * 1.05 + 10,
+      f'{imp_lod["triangles"]}/1200')
+lod_obj_tris = call("_probe_object_tris", {})
+lod_shrunk = [n for n, t in lod_obj_tris.items()
+              if t < pre_obj_tris.get(n, 0) * 0.5]
+check("LOD decimation applied to >=2 meshes", len(lod_shrunk) >= 2,
+      str({n: (pre_obj_tris.get(n), lod_obj_tris[n]) for n in lod_shrunk}))
+
 # collision GLB also round-trips
+call("clear", {})
 imp_col = call("import_glb", {"path": r_fin["files"]["collision"]})
 check("collision GLB reimports", imp_col["object_count"] >= 1)
 
