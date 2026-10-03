@@ -1,6 +1,6 @@
 """ultima3d — agentic 3D asset generator MCP server.
 
-Exposes 13 high-level tools (create_3d, refine_asset, render_asset,
+Exposes 15 high-level tools (create_3d, refine_asset, render_asset,
 validate_asset, finalize_asset, ...) instead of hundreds of Blender buttons.
 The Blender worker (ultima3d/blender_worker.py) owns the mechanics; the LLM
 owns intent and visual judgement.
@@ -167,11 +167,17 @@ def create_3d(
     panel, pipe, curve, extrusion, lathe, rock, beam, barrel, crate, roof, window, door,
     stairs, column, wall, fence, tree, weapon_blade, weapon_handle.
 
-    Blueprint is a free-form hierarchical design doc (kept with the asset for its lifecycle).
+    Blueprint follows the asset_blueprint v1 contract in README (kept with the asset for its lifecycle).
     Returns created nodes + triangle count. Afterwards use render_asset to inspect visually.
     """
     r = _w.call("build", {"recipe": recipe, "blueprint": blueprint, "name": name, "join": join})
     return json.dumps(r)
+
+
+@mcp.tool()
+def compile_blueprint(blueprint: dict) -> str:
+    """Validate a v1 asset blueprint and compile it to recipe nodes plus warnings. Feed the recipe to create_3d."""
+    return json.dumps(_w.call("compile_blueprint", {"blueprint": blueprint}))
 
 
 @mcp.tool()
@@ -263,6 +269,12 @@ def set_geometry(builder: str, node_name: str, params: dict | None = None) -> st
 def validate_asset(triangle_budget: int = 8000) -> str:
     """Machine-checked validation: duplicates, zero-area faces, budget, UVs, materials, scale, manifoldness."""
     return json.dumps(_w.call("validate", {"triangle_budget": triangle_budget}))
+
+
+@mcp.tool()
+def check_assertions(assertions: list, materials: dict | None = None) -> str:
+    """Verify blueprint assertions against the live asset: part count, ratios, symmetry, and color coverage over renders are measured in bpy. Unmeasurable checks return manual status for the director to verify against renders."""
+    return json.dumps(_w.call("check_assertions", {"assertions": assertions, "materials": materials}))
 
 
 @mcp.tool()

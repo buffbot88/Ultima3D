@@ -1,15 +1,18 @@
 # ultima3d (Project Ultima3D) — Agentic 3D Asset Generator MCP
 
 AI-directed procedural 3D synthesis: the LLM owns **intent and visual judgement**, the
-Blender worker owns **mechanics and verification**. Exposes 13 high-level MCP tools, not
+Blender worker owns **mechanics and verification**. Exposes 15 high-level MCP tools, not
 hundreds of Blender buttons.
 
 **Milestones.** v0.1 — deterministic procedural asset compiler proven.
 v0.2 — trustworthy game-asset compiler: measurements are asset-wide, budgets
 are enforceable, materials are consistent, rigs are tested, and exported artifacts are
 round-trip verified.
-v0.3 (this tree) — export-only finalize (decimation never touches the scene, reruns are
+v0.3 — export-only finalize (decimation never touches the scene, reruns are
 idempotent) and bounded worker calls (a hung Blender is killed past a deadline).
+v0.4 (this tree) — blueprint compiler: v1 contract, `compile_blueprint` +
+`check_assertions` critic (counts, ratios, symmetry, color coverage, occlusion,
+mirrored depth).
 
 ```text
 LLM (any MCP client)
@@ -30,17 +33,19 @@ so revisions rebuild deterministically from the saved recipe and stay reproducib
 
 ## Tools
 
-All 13 are registered on the `ultima3d` MCP server.
+All 15 are registered on the `ultima3d` MCP server.
 
 | Tool | Purpose |
 |---|---|
 | `create_3d(recipe, name, blueprint)` | Build from a parametric recipe (26 builders) + optional design blueprint |
+| `compile_blueprint(blueprint)` | Validate a v1 blueprint and compile it to recipe nodes + warnings |
 | `refine_asset(params)` | `{"changes": {"roof.height": 0.55}}` to patch params, or `{"recipe": {...}}` to replace wholesale |
 | `set_geometry(builder, node_name, params)` | Add one node to the current recipe and rebuild |
 | `inspect_asset()` | Machine facts: triangles, dimensions, materials, UVs, modifiers, recipe, blueprint |
 | `render_asset(views, resolution)` | `front, back, left, right, front_34, back_34, top, wire`, returned inline for vision evaluation |
 | `set_material(name, color, roughness, metallic, object)` | Apply a PBR material to the asset or a named object |
 | `validate_asset(triangle_budget)` | 7 machine checks (see below) |
+| `check_assertions(assertions, materials)` | Measure part count, ratios, symmetry, and color coverage over renders in bpy; unmeasurable checks return manual |
 | `finalize_asset(...)` | Clean → UV → decimate → bake → LODs → collision → GLB + `asset.json` |
 | `rig_asset(bones)` | Multi-bone auto-rig with automatic weights |
 | `save_recipe(path)` / `load_recipe(path, rebuild)` | Editable, replayable generation history (JSON) |
@@ -85,6 +90,115 @@ The LLM specifies intent; Blender determines geometry — extended to polygon de
 A per-node `triangle_budget` is measured after the build and reported as
 `node_triangles[node].over_budget` in the build result (advisory; the global budget is
 enforced by `validate_asset`).
+
+## Blueprint contract (v1)
+
+The `blueprint` argument to `create_3d` is the semantic design doc a recipe compiles
+from: perception writes it, the LLM compiles it to recipe nodes, and the critic checks
+it. It is persisted in `asset.json` and by `save_recipe`/`load_recipe`. Pre-v1 free-form
+blueprints remain accepted; v1 below is the recommended contract.
+
+Each section names its producer and consumer — a section that can't be filled by a
+vision pass or read by a pipeline stage doesn't belong:
+
+| Section | Producer | Consumer |
+|---|---|---|
+| `meta` | blueprint authoring | traceability (source image, confidence) |
+| `asset` | passes 1–2 (what is it, style, symmetry, hidden sides) | director decisions |
+| `scale` | pass 2 (basis object of known size) | unit conversion to recipe floats |
+| `parts[]` | pass 3 (forms + evidence) | one recipe node each (`builder` verbatim, optional builder-native `params` which is authoritative, `location` defaulted from `center`, material inlined) |
+| `relations[]` / `ratios` | pass 4 (layout + materials) | resolving ambiguous placement; critic checks |
+| `materials{}` | pass 4 | inlined into recipe nodes |
+| `detail` | pass 5 | `detail` profile + budgets |
+| `depth` | pass 3 (front-to-back order, occlusion pairs + view) | `compile_blueprint` validates node refs; critic verifies via `occlusion` raycasts |
+| `assertions[]` | pass 5 (what "done" looks like) | critic: `check_assertions` measures part count, ratios (`of: ["node.dim", ...]` plus `expected`), symmetry, and color coverage over renders (inline `color`, or `material` resolved against a `materials` map) in bpy; unmeasurable checks return `manual`; misses become `refine_asset` changes |
+
+`relations` predicates are `sits_on`, `centered_on`, `attached_to`, `inset_in`, `beside`,
+plus an `offset`. `parts[].confidence` below ~0.7 means verify-or-ask, not guess.
+Revision attempts and critic history live in session state, not in the persisted spec.
+
+```json
+{
+  "meta": {"version": 1, "sources": ["ref_front_34.png"],
+           "reference_view": "front-three-quarter",
+           "produced_by": "generate_asset_blueprint", "confidence": 0.82},
+  "asset": {"name": "medieval_house", "type": "house", "style_tags": ["medieval", "stylized"],
+            "symmetry": {"axis": "x", "confidence": 0.9},
+            "hidden_geometry": {"assumption": "rear mirrors front", "confidence": 0.8}},
+  "scale": {"basis": "door", "height_m": 2.1},
+  "parts": [
+    {"node": "body", "label": "main timber body", "builder": "rounded_box",
+     "size": [4.0, 3.2, 2.6], "center": [0, 0, 1.3],
+     "material": "timber_dark", "confidence": 0.9,
+     "evidence": "front-left view: timber walls"},
+    {"node": "roof", "label": "steep gabled thatch roof", "builder": "roof",
+     "size": [4.6, 3.8, 1.6], "center": [0, 0, 3.4],
+     "material": "thatch", "confidence": 0.85,
+     "evidence": "pitch ~47deg estimated against wall height"},
+    {"node": "door", "label": "front plank door", "builder": "door",
+     "size": [0.9, 0.08, 2.1], "center": [0.4, -1.62, 1.05],
+     "material": "wood_mid", "confidence": 0.75,
+     "evidence": "off-center in reference; rear assumed mirrored"},
+    {"node": "chimney", "label": "stone chimney, right slope", "builder": "box",
+     "size": [0.5, 0.5, 1.4], "center": [1.2, 0.3, 4.2],
+     "material": "stone", "confidence": 0.6,
+     "evidence": "partially occluded; height estimated"}
+  ],
+  "relations": [
+    {"subject": "roof", "predicate": "sits_on", "object": "body", "offset": [0, 0, 0.05]},
+    {"subject": "door", "predicate": "inset_in", "object": "body", "face": "front"},
+    {"subject": "chimney", "predicate": "attached_to", "object": "roof", "face": "right-slope"}
+  ],
+  "ratios": {"roof_height_to_wall_height": 0.62, "door_width_to_wall_width": 0.22},
+  "depth": {"view": "front", "occludes": [{"front": "roof", "behind": "chimney"}]},
+  "materials": {
+    "timber_dark": {"color": [0.32, 0.22, 0.14], "roughness": 0.75, "metallic": 0.0, "coverage": 0.55},
+    "thatch":      {"color": [0.55, 0.45, 0.26], "roughness": 0.9,  "metallic": 0.0, "coverage": 0.3},
+    "wood_mid":    {"color": [0.45, 0.3, 0.18],  "roughness": 0.7,  "metallic": 0.0, "coverage": 0.08},
+    "stone":       {"color": [0.5, 0.5, 0.52],   "roughness": 0.85, "metallic": 0.0, "coverage": 0.07}
+  },
+  "detail": {"profile": "game", "triangle_budget": 8000,
+             "surface_notes": ["rough-hewn timber", "uneven thatch edge"]},
+  "assertions": [
+    {"check": "part_count", "expected": 4},
+    {"check": "symmetry_x", "min": 0.8},
+    {"check": "ratio", "name": "roof_height_to_wall_height",
+     "of": ["body.z", "roof.z"], "expected": 0.62, "tolerance": 0.12},
+    {"check": "color_present", "material": "thatch", "min_coverage": 0.2}
+  ]
+}
+```
+
+## Blueprint protocol
+
+The five passes turn one reference image into a v1 blueprint; each pass answers
+only its own questions, then the critic verifies before anything is called done.
+The server is blind — passes run in the vision-capable director; `compile_blueprint`
+and `check_assertions` are the mechanical backstops.
+
+- **Pass 1 — identify:** asset type, overall style, reference view. Fills `meta`, `asset.name/type/style_tags`.
+- **Pass 2 — scale and symmetry:** basis object of known size, symmetry axis, what the hidden sides most likely look like. Fills `scale`, `asset.symmetry`, `asset.hidden_geometry`.
+- **Pass 3 — decompose:** major forms as parts with `builder`, `size`, `center`, builder-native `params` where the shape needs them (beams, extrusions, lathes), plus `evidence` per part. Estimate front-to-back depth order before finalizing `size`/`center` — what occludes what determines extrusion depths. Fills `parts[]`, `depth`.
+- **Pass 4 — relate:** spatial predicates, dimension ratios that must hold, material palette with coverage. Fills `relations[]`, `ratios`, `materials{}`.
+- **Pass 5 — specify done:** detail profile, triangle budget, surface notes, and one assertion per checkable fact. Fills `detail`, `assertions[]`.
+
+Compile with `compile_blueprint` (unknown builders, dangling material refs, bad relation
+targets, and missing required params error here — not at build time), fix warnings,
+then `create_3d` with the returned recipe. Critic procedure, in order:
+
+1. `render_asset`, then `check_assertions` — part count, ratios, symmetry, color
+   coverage, occlusion, and mirrored depths are measured (color needs renders;
+   without them it stays `manual`). `occlusion` raycasts the depth pairs from the
+   reference view; `mirror_depth` re-renders hidden-side depth from geometry as a
+   second opinion on the symmetry assumption — lighting can't fake either.
+   Every `fail` becomes a `refine_asset` change; remaining `manual` results are
+   verified by the director against renders.
+2. Nothing is called done while any result is `fail` or any `manual` is unverified.
+3. After each refine, re-run `check_assertions` — ratios and symmetry are re-measured,
+   not assumed fixed.
+
+Node-level ratios need an unjoined scene (`join: false`): joining merges geometry, so
+merged-away nodes honestly report `manual`. Unknown assertion types fail loudly.
 
 ## Rigging
 
@@ -189,6 +303,8 @@ python tests/smoke_test.py      # end-to-end: build → render → validate → 
 python tests/roundtrip_test.py  # build → rig (auto+fallback) → finalize → clear → re-import GLB → compare vs manifest
 python tests/builders_test.py   # sweep all 26 builders: each registers, inspects and validates
 python tests/params_test.py     # recipe/refine parameter reporting, over the MCP server itself
+python tests/blueprint_test.py  # blueprint compile + critic: counts, ratios, symmetry, color, occlusion, mirror depth
+python tests/timeout_test.py    # bounded worker calls: hung Blender is killed past the deadline
 ```
 
 Config (env): `ULTIMA3D_BLENDER` (Blender executable), `ULTIMA3D_OUT` (output dir),

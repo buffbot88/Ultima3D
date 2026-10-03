@@ -735,7 +735,12 @@ def _join_and_normalize(join):
     obs = _asset_meshes()
     if obs:
         main = obs[0]
+        old_name = main.name
         main.name = STATE["asset_name"] or "asset"
+        if main.name != old_name:
+            # keep the manifest truthful: it recorded pre-assembly node names
+            for objs in (STATE.get("manifest") or {}).get("objects", {}).values():
+                objs[:] = [main.name if n == old_name else n for n in objs]
         bpy.ops.object.select_all(action="DESELECT")
         main.select_set(True)
         bpy.context.view_layer.objects.active = main
@@ -816,6 +821,10 @@ VIEW_ANGLES = {
     "front_34": (60, 45), "back_34": (60, 135), "top": (10, 0), "wire": (60, 45),
 }
 
+# Flat world background for renders (linear); doubled as the exclusion color
+# for color-coverage measurement. Single source of truth with _setup_render.
+RENDER_BG = (0.85, 0.85, 0.88)
+
 
 def _setup_render(res=512):
     sc = bpy.context.scene
@@ -828,7 +837,7 @@ def _setup_render(res=512):
     sc.world.use_nodes = True
     bg = sc.world.node_tree.nodes.get("Background")
     if bg:
-        bg.inputs[0].default_value = (0.85, 0.85, 0.88, 1.0)
+        bg.inputs[0].default_value = (*RENDER_BG, 1.0)
         bg.inputs[1].default_value = 1.0
     # sun light
     if not any(o.type == "LIGHT" for o in bpy.data.objects):
@@ -926,6 +935,461 @@ def op_validate(params):
 
     return {"pass": ok, "checks": checks, "triangles": tris, "budget": budget,
             "object_count": len(obs)}
+
+
+# ---- blueprint: compile the v1 contract to recipe nodes, check assertions ---
+
+
+RELATION_PREDICATES = ("sits_on", "centered_on", "attached_to", "inset_in", "beside")
+
+
+def _builder_required(builder):
+    """Recipe keys a builder cannot work without: params with no default."""
+    import inspect as _inspect
+    kinds = (_inspect.Parameter.POSITIONAL_OR_KEYWORD, _inspect.Parameter.KEYWORD_ONLY)
+    return sorted(n for n, p in _inspect.signature(builder).parameters.items()
+                  if n != "name" and p.kind in kinds and p.default is _inspect.Parameter.empty)
+
+
+def _builder_accepts_location(builder):
+    """Whether a location param reaches the builder, explicitly or via **kw."""
+    import inspect as _inspect
+    params = _inspect.signature(builder).parameters
+    if "location" in params:
+        return True
+    return any(p.kind is _inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def op_compile_blueprint(params):
+    """Validate a v1 asset blueprint and compile it to recipe nodes plus warnings."""
+    bp = params.get("blueprint")
+    if not isinstance(bp, dict):
+        raise ValueError("blueprint must be an object")
+    parts = bp.get("parts")
+    if not isinstance(parts, list) or not parts:
+        raise ValueError("blueprint needs a non-empty parts list")
+    materials = bp.get("materials") or {}
+    if not isinstance(materials, dict):
+        raise ValueError("blueprint materials must be an object")
+    profile = (bp.get("detail") or {}).get("profile", "game")
+    if profile not in DETAIL_PROFILES:
+        raise ValueError(f"unknown detail profile {profile!r}; use one of {sorted(DETAIL_PROFILES)}")
+    relations = bp.get("relations") or []
+    if not isinstance(relations, list):
+        raise ValueError("blueprint relations must be a list")
+    recipe, warnings = {}, []
+    for part in parts:
+        if not isinstance(part, dict):
+            raise ValueError("every part must be an object")
+        node = part.get("node")
+        if not node or not isinstance(node, str):
+            raise ValueError("every part needs a string node name")
+        if node in recipe:
+            raise ValueError(f"duplicate node {node!r}")
+        bname = part.get("builder")
+        builder = BUILDERS.get(bname)
+        if not builder:
+            raise ValueError(f"unknown builder {bname!r} for node {node!r}")
+        pparams = part.get("params") or {}
+        if not isinstance(pparams, dict):
+            raise ValueError(f"node {node!r} params must be an object")
+        missing = [k for k in _builder_required(builder) if k not in pparams]
+        if missing:
+            raise ValueError(f"node {node!r} misses required {bname} params: {missing}")
+        mref = part.get("material")
+        if mref is not None:
+            mat = materials.get(mref)
+            if not isinstance(mat, dict):
+                raise ValueError(f"node {node!r} references unknown material {mref!r}")
+            c = mat.get("color")
+            if c is not None and not (isinstance(c, (list, tuple)) and len(c) == 3 and
+                                      all(isinstance(v, (int, float)) for v in c)):
+                raise ValueError(f"material {mref!r} color must be [r, g, b]")
+        spec = dict(pparams)
+        if "location" not in spec and _builder_accepts_location(builder):
+            c = part.get("center")
+            if c is None:
+                warnings.append(f"node {node!r} has no placement; defaults to origin")
+            elif not (isinstance(c, (list, tuple)) and len(c) == 3 and
+                      all(isinstance(v, (int, float)) for v in c)):
+                raise ValueError(f"node {node!r} center must be [x, y, z]")
+            else:
+                spec["location"] = list(c)
+        if mref is not None:
+            mat = materials[mref]
+            spec["material"] = {"name": mref, **{k: mat[k] for k in
+                                                     ("color", "roughness", "metallic", "emission")
+                                                     if k in mat}}
+        spec.setdefault("detail", profile)
+        recipe[node] = {"builder": bname, **spec}
+        if isinstance(part.get("confidence"), (int, float)) and part["confidence"] < 0.7:
+            warnings.append(f"node {node!r} confidence {part['confidence']} — verify or refine after build")
+    for rel in relations:
+        if not isinstance(rel, dict):
+            raise ValueError("every relation must be an object")
+        for end in ("subject", "object"):
+            if rel.get(end) not in recipe:
+                raise ValueError(f"relation names unknown node {rel.get(end)!r}")
+        if rel.get("predicate") not in RELATION_PREDICATES:
+            warnings.append(f"relation {rel.get('subject')!r}->{rel.get('object')!r} "
+                            f"uses non-standard predicate {rel.get('predicate')!r}")
+    depth = bp.get("depth") or {}
+    if not isinstance(depth, dict):
+        raise ValueError("blueprint depth must be an object")
+    if "view" in depth and depth["view"] not in _VIEW_RAYS:
+        raise ValueError(f"unknown depth view {depth['view']!r}")
+    for pair in depth.get("occludes") or []:
+        if not isinstance(pair, dict):
+            raise ValueError("every depth occludes entry must be an object")
+        for end in ("front", "behind"):
+            if pair.get(end) not in recipe:
+                raise ValueError(f"depth pair names unknown node {pair.get(end)!r}")
+    return {"recipe": recipe, "warnings": warnings}
+
+
+def _bounds_of(obs):
+    """World-space [sx, sy, sz] union sizes of the given objects."""
+    lo = Vector((math.inf,) * 3)
+    hi = Vector((-math.inf,) * 3)
+    for o in obs:
+        for c in o.bound_box:
+            w = o.matrix_world @ Vector(c)
+            lo = Vector(map(min, lo, w))
+            hi = Vector(map(max, hi, w))
+    return [hi[i] - lo[i] for i in range(3)]
+
+
+def _measure_operand(token):
+    """A 'node.dim' operand to a size, or (None, reason) when not measurable."""
+    name, sep, dim = token.rpartition(".") if isinstance(token, str) else ("", "", "")
+    if not sep or dim not in "xyz":
+        return None, f"bad operand {token!r}; use 'node.x|y|z'"
+    manifest = STATE.get("manifest") or {}
+    names = (manifest.get("objects") or {}).get(name, [])
+    obs = [bpy.data.objects[n] for n in names if n in bpy.data.objects]
+    if not obs:
+        ob = bpy.data.objects.get(name)
+        obs = [ob] if ob is not None else []
+    obs = [o for o in obs if o.type == "MESH"]
+    if not obs:
+        if name in (manifest.get("objects") or {}):
+            return None, f"{name!r} has no live objects (joined away?)"
+        return None, f"unknown node {name!r}"
+    return _bounds_of(obs)["xyz".index(dim)], None
+
+
+def _symmetry_score(axis="x"):
+    """Share of asset verts mirrored across the asset center within 2% of max dim."""
+    import mathutils
+    obs = _asset_meshes()
+    pts = [o.matrix_world @ v.co for o in obs for v in o.data.vertices]
+    if not pts:
+        return 0.0
+    ax = "xyz".index(axis)
+    size = max(max(p[i] for p in pts) - min(p[i] for p in pts) for i in range(3)) or 1.0
+    c = (max(p[ax] for p in pts) + min(p[ax] for p in pts)) / 2
+    kd = mathutils.kdtree.KDTree(len(pts))
+    for i, p in enumerate(pts):
+        kd.insert(p, i)
+    kd.balance()
+    tol = 0.02 * size
+    ok = 0
+    for p in pts:
+        m = Vector(p)
+        m[ax] = 2 * c - p[ax]
+        if kd.find(m)[2] <= tol:
+            ok += 1
+    return ok / len(pts)
+
+
+def _linear_to_srgb(c):
+    """Scene-linear to sRGB; renders are display-transformed, recipe colors are not."""
+    return c * 12.92 if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
+
+
+def _view_coverage(path, target, tol):
+    """Fraction of non-background pixels near target color in one render."""
+    import numpy as _np
+    img = bpy.data.images.load(path)
+    try:
+        w, h = img.size
+        if w <= 0 or h <= 0:
+            return None
+        px = _np.array(img.pixels[:], dtype=_np.float64).reshape(-1, 4)[:, :3]
+    finally:
+        bpy.data.images.remove(img)
+    bg = _np.array([_linear_to_srgb(c) for c in RENDER_BG])
+    asset = _np.linalg.norm(px - bg, axis=1) > 0.08
+    if asset.sum() == 0:
+        return None
+    tgt = _np.array([_linear_to_srgb(c) for c in target])
+    match = asset & (_np.linalg.norm(px - tgt, axis=1) <= tol)
+    return match.sum() / asset.sum(), asset.sum()
+
+
+def _color_coverage(target, tol):
+    """Pooled coverage over rendered views (wire excluded); None when unmeasurable."""
+    d = STATE.get("last_render_dir")
+    if not d or not os.path.isdir(d):
+        return None, "no renders — run render_asset first"
+    views, m_sum, a_sum = {}, 0, 0
+    for v in sorted(VIEW_ANGLES):
+        if v == "wire":
+            continue  # workbench shading, not PBR colors
+        p = os.path.join(d, f"{v}.png")
+        if not os.path.isfile(p):
+            continue
+        try:
+            got = _view_coverage(p, target, tol)
+        except Exception:
+            continue
+        if got is None:
+            continue
+        cov, n = got
+        views[v] = cov
+        m_sum += cov * n
+        a_sum += n
+    if not views:
+        return None, "no usable renders — run render_asset first"
+    return m_sum / a_sum, views
+
+
+# Viewer side -> ray travel dir; matches the VIEW_ANGLES render cameras.
+_VIEW_RAYS = {
+    "front": ((1, 0, 0), (-1, 0, 0)),
+    "back": ((-1, 0, 0), (1, 0, 0)),
+    "left": ((0, -1, 0), (0, 1, 0)),
+    "right": ((0, 1, 0), (0, -1, 0)),
+    "top": ((0, 0, 1), (0, 0, -1)),
+}
+
+
+def _node_live_objects(node):
+    """Manifest objects for a node that still exist, else a same-named live mesh."""
+    manifest = STATE.get("manifest") or {}
+    names = (manifest.get("objects") or {}).get(node, [])
+    obs = [bpy.data.objects[n] for n in names if n in bpy.data.objects]
+    if not obs:
+        ob = bpy.data.objects.get(node)
+        obs = [ob] if ob is not None else []
+    obs = [o for o in obs if o.type == "MESH"]
+    if not obs:
+        if node in (manifest.get("objects") or {}):
+            return None, f"{node!r} has no live objects (joined away?)"
+        return None, f"unknown node {node!r}"
+    return obs, None
+
+
+def _ray_hit_world(ob, origin, direction):
+    """World distance to the first hit along a world ray, or None. Rest-pose geometry."""
+    inv = ob.matrix_world.inverted()
+    d = inv.to_3x3() @ Vector(direction)
+    if d.length < 1e-12:
+        return None
+    hit, loc, _, _ = ob.ray_cast(inv @ Vector(origin), d.normalized())
+    if not hit:
+        return None
+    return (ob.matrix_world @ loc - Vector(origin)).length
+
+
+def _check_occlusion(a):
+    """Share of behind-node surface hidden behind front-node geometry from a view."""
+    for k in ("front", "behind"):
+        if not isinstance(a.get(k), str):
+            return {"status": "fail", "detail": f"occlusion needs string {k} node name"}
+    view = a.get("view", "front")
+    if view not in _VIEW_RAYS:
+        return {"status": "fail", "detail": f"unknown view {view!r}"}
+    fobs, fr = _node_live_objects(a["front"])
+    bobs, br = _node_live_objects(a["behind"])
+    if fr or br:
+        return {"status": "manual", "detail": fr or br}
+    try:
+        minimum = float(a.get("min", 0.5))
+    except (TypeError, ValueError):
+        return {"status": "fail", "detail": "occlusion needs a numeric min"}
+    to_viewer = Vector(_VIEW_RAYS[view][0])
+    size = max(_bounds_of(_asset_meshes())) or 1.0
+    eps = 1e-4 * size
+    n = occ = 0
+    for ob in bobs:
+        for v in ob.data.vertices:
+            o = ob.matrix_world @ v.co + to_viewer * eps
+            n += 1
+            for fob in fobs:
+                if _ray_hit_world(fob, o, to_viewer) is not None:
+                    occ += 1
+                    break
+    score = occ / n if n else 0.0
+    ok = score >= minimum
+    return {"status": "pass" if ok else "fail", "measured": round(score, 4),
+            "expected": minimum,
+            "detail": f"{score:.4f} of {a['behind']!r} hidden behind {a['front']!r} "
+                      f"from {view} vs min {minimum}"}
+
+
+def _check_mirror_depth(a):
+    """Hidden-side second opinion: front depths vs mirrored back depths over a ray grid."""
+    axis = a.get("axis", "x")
+    if axis not in "xyz" or len(axis) != 1:
+        return {"status": "fail", "detail": f"bad axis {axis!r}"}
+    try:
+        n = max(4, min(int(a.get("resolution", 32)), 64))
+    except (TypeError, ValueError):
+        return {"status": "fail", "detail": "mirror_depth needs an integer resolution"}
+    try:
+        minimum = float(a.get("min", 0.9))
+    except (TypeError, ValueError):
+        return {"status": "fail", "detail": "mirror_depth needs a numeric min"}
+    obs = _asset_meshes()
+    pts = [o.matrix_world @ v.co for o in obs for v in o.data.vertices]
+    if not pts:
+        return {"status": "fail", "detail": "no vertices to sample"}
+    ax = "xyz".index(axis)
+    u, v = [i for i in range(3) if i != ax]
+    lo = [min(p[i] for p in pts) for i in range(3)]
+    hi = [max(p[i] for p in pts) for i in range(3)]
+    size = max(hi[i] - lo[i] for i in range(3)) or 1.0
+    margin, tol = 0.1 * size, 0.02 * size
+
+    def depth(side):
+        base = list(lo)
+        base[ax] = hi[ax] + margin if side > 0 else lo[ax] - margin
+        direction = [0, 0, 0]
+        direction[ax] = -side
+        out = []
+        for iu in range(n):
+            cu = lo[u] + (iu + 0.5) / n * (hi[u] - lo[u])
+            for iv in range(n):
+                cell = list(base)
+                cell[u], cell[v] = cu, lo[v] + (iv + 0.5) / n * (hi[v] - lo[v])
+                best = None
+                for ob in obs:
+                    t = _ray_hit_world(ob, cell, direction)
+                    if t is not None and (best is None or t < best):
+                        best = t
+                out.append(best)
+        return out
+
+    match = 0
+    front, back = depth(1), depth(-1)
+    cells = len(front)
+    for dp, dm in zip(front, back):
+        if dp is None and dm is None:
+            match += 1
+        elif dp is not None and dm is not None and abs(dp - dm) <= tol:
+            match += 1
+    score = match / cells
+    ok = score >= minimum
+    return {"status": "pass" if ok else "fail", "measured": round(score, 4),
+            "expected": minimum, "detail": f"{score:.4f} mirrored cells vs min {minimum}"}
+
+
+def _check_one(a, materials):
+    """One assertion to a result dict; unknown checks fail, vision-side checks stay manual."""
+    name = a.get("name") if isinstance(a, dict) else None
+    kind = a.get("check") if isinstance(a, dict) else None
+    if kind == "part_count":
+        try:
+            expected = int(a["expected"])
+        except (KeyError, TypeError, ValueError):
+            return {"check": kind, "name": name, "status": "fail",
+                    "detail": "part_count needs an integer expected"}
+        manifest = STATE.get("manifest")
+        if manifest and manifest.get("objects") is not None:
+            n, basis = len(manifest["objects"]), "manifest nodes"
+        else:
+            n, basis = len(_asset_meshes()), "meshes"
+        ok = n == expected
+        return {"check": kind, "name": name, "status": "pass" if ok else "fail",
+                "measured": n, "expected": expected, "detail": f"{n} vs {expected} ({basis})"}
+    if kind == "ratio":
+        of = a.get("of")
+        if not (isinstance(of, list) and len(of) == 2):
+            return {"check": kind, "name": name, "status": "fail",
+                    "detail": "ratio needs of: [a.dim, b.dim]"}
+        va, ra = _measure_operand(of[0])
+        vb, rb = _measure_operand(of[1])
+        if ra or rb:
+            return {"check": kind, "name": name, "status": "manual",
+                    "detail": ra or rb}
+        try:
+            expected, tol = float(a["expected"]), float(a.get("tolerance", 0.1))
+        except (KeyError, TypeError, ValueError):
+            return {"check": kind, "name": name, "status": "fail",
+                    "detail": "ratio needs a numeric expected"}
+        if vb == 0:
+            return {"check": kind, "name": name, "status": "fail", "detail": "zero denominator"}
+        m = va / vb
+        ok = abs(m - expected) <= tol
+        return {"check": kind, "name": name, "status": "pass" if ok else "fail",
+                "measured": round(m, 4), "expected": expected,
+                "detail": f"{m:.4f} vs {expected} ± {tol}"}
+    if kind in ("symmetry_x", "symmetry_y", "symmetry_z"):
+        try:
+            minimum = float(a.get("min", 0.8))
+        except (TypeError, ValueError):
+            return {"check": kind, "name": name, "status": "fail",
+                    "detail": "symmetry needs a numeric min"}
+        s = _symmetry_score(kind.split("_")[1])
+        ok = s >= minimum
+        return {"check": kind, "name": name, "status": "pass" if ok else "fail",
+                "measured": round(s, 4), "expected": minimum,
+                "detail": f"{s:.4f} vs min {minimum}"}
+    if kind == "color_present":
+        target, mref = a.get("color"), a.get("material")
+        if target is None and mref is not None:
+            mat = materials.get(mref)
+            target = mat.get("color") if isinstance(mat, dict) else None
+        if target is None:
+            return {"check": kind, "name": name, "status": "manual",
+                    "expected": mref, "detail": "no resolvable color — verify against renders"}
+        if not (isinstance(target, (list, tuple)) and len(target) == 3 and
+                all(isinstance(v, (int, float)) for v in target)):
+            return {"check": kind, "name": name, "status": "fail",
+                    "detail": f"bad color {target!r}; use [r, g, b]"}
+        try:
+            minimum = float(a["min_coverage"])
+        except (KeyError, TypeError, ValueError):
+            return {"check": kind, "name": name, "status": "fail",
+                    "detail": "color_present needs a numeric min_coverage"}
+        try:
+            tol = float(a.get("tolerance", 0.3))
+        except (TypeError, ValueError):
+            return {"check": kind, "name": name, "status": "fail",
+                    "detail": "color tolerance must be numeric"}
+        cov, info = _color_coverage(target, tol)
+        if cov is None:
+            return {"check": kind, "name": name, "status": "manual",
+                    "expected": minimum, "detail": info}
+        ok = cov >= minimum
+        return {"check": kind, "name": name, "status": "pass" if ok else "fail",
+                "measured": round(cov, 4), "expected": minimum,
+                "detail": f"{cov:.4f} vs min {minimum} pooled over {len(info)} views",
+                "views": {v: round(c, 4) for v, c in info.items()}}
+    if kind == "occlusion":
+        r = _check_occlusion(a)
+        return {"check": kind, "name": name, **r}
+    if kind == "mirror_depth":
+        r = _check_mirror_depth(a)
+        return {"check": kind, "name": name, **r}
+    return {"check": kind, "name": name, "status": "fail",
+            "detail": f"unknown check {kind!r}"}
+
+
+def op_check_assertions(params):
+    """Measure blueprint assertions against the live asset; vision-side ones stay manual."""
+    assertions = params.get("assertions")
+    if not isinstance(assertions, list):
+        raise ValueError("assertions must be a list")
+    if not _asset_meshes():
+        raise ValueError("nothing to check — build first")
+    materials = params.get("materials") or {}
+    if not isinstance(materials, dict):
+        raise ValueError("materials must be an object")
+    results = [_check_one(a, materials) for a in assertions]
+    return {"pass": all(r["status"] in ("pass", "manual") for r in results),
+            "results": results}
 
 
 # ---- finalize: clean, UV, LOD, collision, export ---------------------------
@@ -1451,6 +1915,8 @@ OPS = {
     "set_material": op_set_material,
     "render_views": op_render_views,
     "validate": op_validate,
+    "compile_blueprint": op_compile_blueprint,
+    "check_assertions": op_check_assertions,
     "finalize": op_finalize,
     "rig": op_rig,
     "import_glb": op_import_glb,
