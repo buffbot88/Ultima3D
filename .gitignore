@@ -3,3 +3,5 @@
 Our Build Plan.md
 /rust/target
 *.log
+__pycache__/
+*.pyc

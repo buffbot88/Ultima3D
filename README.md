@@ -17,9 +17,12 @@ mirrored depth).
 v0.5 — Rust MCP host: the 61-tool surface (worker-protocol, live-Blender,
 Godot, Photoshop) runs as a single `ultima3d-server` binary; only the code
 that executes *inside* Blender/Godot/Photoshop stays in its native language.
-v0.6 (this tree) — full Rust switch: host-side Python deleted, system tray
+v0.6 — full Rust switch: host-side Python deleted, system tray
 ported to Rust (`ultima3d-tray`, whose icon mark is rendered by Ultima3D
 itself), GitHub CI (build + 61-tool parity test) and release workflows.
+v0.7 (this tree) — Python host restored beside Rust (no build step needed), a loopback
+daemon plus a Freebuff Desktop skill (the desktop no longer loads MCP servers), and a
+40-minute session budget so no agent can run the tool continuously.
 
 ```text
 LLM (any MCP client)
@@ -375,7 +378,11 @@ finalize_asset(name="medieval_mailbox")
 ## Layout
 
 ```text
-rust/                    Rust workspace (the entire host: server + tray)
+ultima3d/                Python host: server.py (18 tools), live/ (32), godot/ (6),
+                         photoshop/ (5), session.py (40-min budget), daemon.py (loopback
+                         JSON), skill.py (shell bridge + skill installer)
+skills/ultima3d/SKILL.md the Freebuff Desktop skill (installed into ~/.agents/skills)
+rust/                    Rust workspace (the optional fast host: server + tray)
   crates/ultima3d-server/  the `ultima3d` MCP server (61 tools + 1 prompt)
   crates/ultima3d-tray/    the Windows system-tray controller
   crates/ultima3d-tray/assets/mark.png  tray mark, rendered by Ultima3D itself
@@ -402,6 +409,31 @@ merges are manual from here.
 
 ## Run
 
+The Python host needs no build step — `pip install -e .` once (needs `mcp>=2.0` + `httpx`):
+
+```bash
+python -m ultima3d.skill call ultima3d_status     # starts the loopback daemon, then calls a tool
+python -m ultima3d.skill tools                    # all 61 tools
+python -m ultima3d.skill status                   # daemon + session budget
+python -m ultima3d.skill stop                     # stop the daemon and its Blender worker
+python -m ultima3d.server                         # stdio MCP (what an MCP client launches)
+python -m ultima3d.server --http 127.0.0.1:8791   # loopback JSON daemon in the foreground
+python -m ultima3d.tray                           # optional tray controller, owns the stdio server
+```
+
+`--http` binds loopback only and refuses any other host. The daemon dispatches through the same
+tool manager as stdio, so validation and error text are identical, and it writes
+`output/daemon.log`. `ULTIMA3D_DAEMON_TOKEN` optionally requires an `X-Ultima3D-Token` header.
+
+### Session budget
+
+One server process is capped at **40 minutes** (`ULTIMA3D_SESSION_MINUTES`). The clock starts with
+the process, `ultima3d_status` reports `session.remaining_seconds`, every tool call is refused past
+the deadline, and a watchdog kills the Blender worker and exits the server when it lands. Nothing
+runs continuously: a new session means an explicit restart.
+
+The Rust host remains the optional fast path:
+
 ```bash
 cd rust && cargo build --workspace     # ultima3d-server + ultima3d-tray
 cargo test --workspace                 # unit tests + 61-tool parity test
@@ -414,10 +446,12 @@ Config (env): `ULTIMA3D_BLENDER` (Blender executable), `ULTIMA3D_OUT` (output di
 `ULTIMA3D_WORKER` (worker script, default `blender/worker.py`),
 `ULTIMA3D_SERVER` (server binary for the tray to own),
 `ULTIMA3D_CALL_TIMEOUT` (per-call worker deadline in seconds, default 600 — a hung
-worker is killed past it, losing its scene state).
+worker is killed past it, losing its scene state),
+`ULTIMA3D_SESSION_MINUTES` (session cap, default 40),
+`ULTIMA3D_DAEMON` (daemon address, default `127.0.0.1:8791`),
+`ULTIMA3D_DAEMON_TOKEN` (optional shared token for the daemon).
 
-Requires **Blender 5.2 LTS** and a Rust stable toolchain.
-Godot bridge needs Godot 4.x with the bundled editor plugin enabled.
+Requires **Blender 5.2 LTS**; a Rust stable toolchain only for the Rust host.
 
 ## Backends
 
@@ -440,23 +474,40 @@ One MCP server, four backends — all degrading gracefully when their editor is 
 - **Pipeline** (`ultima3d_status_all`, `export_asset_to_godot`, `review_asset_loop`)
   — status fan-out, GLB handoff to a Godot project, validate+critic review gate.
 
-## Freebuff / MCP client wiring
+## Freebuff wiring
 
-`~/.agents/mcp.json` (point at the built binary):
+### Desktop: the skill (no MCP servers)
+
+Freebuff Desktop loads skills, not MCP servers, so the tool surface is reached by shelling out to
+the local daemon. Install the skill once:
+
+```bash
+python -m ultima3d.skill install     # copies skills/ultima3d -> ~/.agents/skills/ultima3d
+```
+
+Restart or reload the desktop; the skill tells the agent to run
+`python -m ultima3d.skill call <tool> '<json>'` from the repo root, on this machine only, and to
+respect the session budget. Each call is one JSON result; renders come back as PNG paths.
+
+### MCP clients (CLI, other agents)
+
+`~/.agents/mcp.json` points at the Python module (or the built Rust binary):
 
 ```json
 {
   "mcpServers": {
     "ultima3d": {
-      "command": "C:/Users/buffb/Desktop/GitHub/Ultima3D/rust/target/debug/ultima3d-server.exe"
+      "command": "python",
+      "args": ["-m", "ultima3d.server"],
+      "cwd": "C:/Users/buffb/Desktop/GitHub/Ultima3D"
     }
   }
 }
 ```
 
-(Use `target/release/ultima3d-server.exe` after `cargo build --release`.)
 The client launches one long-lived Blender worker per server process, so scene, recipe and
-blueprint state persist across tool calls. Restart the MCP server after changing code.
+blueprint state persist across tool calls, and the 40-minute budget applies to it too.
+Restart the server after changing code.
 
 ## Architecture boundary
 
