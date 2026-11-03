@@ -39,3 +39,10 @@ Run the server (or point the MCP client) at the repo root: it resolves
 `ULTIMA3D_WORKER` overrides the worker script path, `ULTIMA3D_SERVER`
 tells `ultima3d-tray` which server binary to own (default: the
 `ultima3d-server.exe` sitting next to the tray binary).
+
+The Python host is the zero-build alternative: `python -m ultima3d.server` speaks the
+same stdio MCP surface, and `python -m ultima3d.server --http 127.0.0.1:8791` serves it
+to shells and Freebuff skills. Both hosts resolve `blender/worker.py` and `output/`
+from the working directory and honour `ULTIMA3D_WORKER`, `ULTIMA3D_OUT` and
+`ULTIMA3D_CALL_TIMEOUT`; only the Python host enforces the 40-minute
+`ULTIMA3D_SESSION_MINUTES` budget.

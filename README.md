@@ -1,7 +1,7 @@
 # ultima3d (Project Ultima3D) — Agentic 3D Asset Generator MCP
 
 AI-directed procedural 3D synthesis: the LLM owns **intent and visual judgement**, the
-Blender worker owns **mechanics and verification**. One `ultima3d` MCP server exposes
+One `ultima3d` server — stdio MCP, or the loopback daemon a Freebuff skill drives — exposes
 61 tools: 15 procedural asset tools, 32 live-Blender GUI tools, 6 Godot editor tools,
 5 Photoshop CS3 tools, and 3 pipeline tools — plus the `asset_creation_strategy` prompt.
 
@@ -25,10 +25,10 @@ daemon plus a Freebuff Desktop skill (the desktop no longer loads MCP servers), 
 40-minute session budget so no agent can run the tool continuously.
 
 ```text
-LLM (any MCP client)
+LLM (MCP client — or a Freebuff skill driving the loopback daemon)
  │  create_3d(recipe, blueprint)
  ▼
-ultima3d-server (Rust, stdio MCP)
+ultima3d host (Python `ultima3d.server`, or the Rust `ultima3d-server`)
  │  JSON-lines RPC ("@JSON@"-prefixed responses)
  ▼
 blender --background --factory-startup
@@ -55,9 +55,14 @@ renders `rust/crates/ultima3d-tray/assets/mark.png`, which the tray
 composites over a per-status backdrop at runtime. Status logic, icons and the
 process manager are covered by the tray crate's unit tests.
 
+A no-Rust twin ships with the Python host: `python -m ultima3d.tray` owns
+`python -m ultima3d.server` with the same menu, status model and idle chime, so the
+tool is controllable without a cargo build.
+
 ## Tools
 
-All 61 are registered on the `ultima3d` MCP server: the 15 procedural tools below,
+All 61 are registered on the one server, reachable as stdio MCP or over the daemon: the 15
+procedural tools below,
 plus `ultima3d_status_all`, `export_asset_to_godot` and `review_asset_loop` (pipeline),
 6 `godot_*` tools, 5 `photoshop_*` tools, and 32 live-Blender GUI tools.
 
@@ -398,10 +403,10 @@ godot/addon/     Godot editor plugin (install into your project)
 output/icon_work/render_icon.py  renders the tray mark (Blender, headless)
 ```
 
-A plain `git clone` is all you need — no submodules. GitHub CI builds the
-workspace and runs `cargo test` (unit tests + a live 61-tool parity check
-against the built server, no Blender/Godot required); releases are cut from
-`v*` tags with both Windows binaries attached.
+A plain `git clone` is all you need — no submodules. GitHub CI builds the Rust
+workspace and runs `cargo test`, and a second job exercises the Python host (61-tool
+parity, session budget, skill package, daemon round-trip; no Blender/Godot required);
+releases are cut from `v*` tags with both Windows binaries attached.
 
 The live tools were ported from
 [mcp-for-blender](https://github.com/ahujasid/mcp-for-blender); upstream
@@ -525,3 +530,10 @@ diff against a recipe rather than a rewrite of geometry.
   validate/finalize time.
 - `finalize_asset` embeds textures in the GLB only when Blender's exporter does so via
   material node images; external bake PNGs are the canonical reference (recorded in asset.json).
+
+- The 40-minute session budget belongs to the Python host and its daemon; the pre-existing
+  Rust binary has no cap of its own.
+- The daemon has no authentication unless `ULTIMA3D_DAEMON_TOKEN` is set. It is loopback-only
+  by design and refuses any other bind address.
+- Restarting the server begins a new 40-minute budget: the cap bounds one run, not a rolling
+  window across restarts.
