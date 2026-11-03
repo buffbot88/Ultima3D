@@ -62,9 +62,9 @@ tool is controllable without a cargo build.
 ## Tools
 
 All 61 are registered on the one server, reachable as stdio MCP or over the daemon: the 15
-procedural tools below,
-plus `ultima3d_status_all`, `export_asset_to_godot` and `review_asset_loop` (pipeline),
-6 `godot_*` tools, 5 `photoshop_*` tools, and 32 live-Blender GUI tools.
+procedural tools below, plus `ultima3d_status_all`, `export_asset_to_godot` and
+`review_asset_loop` (pipeline), 6 `godot_*` tools, 5 `photoshop_*` tools, and 32 live-Blender
+GUI tools.
 
 | Tool | Purpose |
 |---|---|
@@ -530,7 +530,6 @@ diff against a recipe rather than a rewrite of geometry.
   validate/finalize time.
 - `finalize_asset` embeds textures in the GLB only when Blender's exporter does so via
   material node images; external bake PNGs are the canonical reference (recorded in asset.json).
-
 - The 40-minute session budget belongs to the Python host and its daemon; the pre-existing
   Rust binary has no cap of its own.
 - The daemon has no authentication unless `ULTIMA3D_DAEMON_TOKEN` is set. It is loopback-only
