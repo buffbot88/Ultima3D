@@ -23,6 +23,10 @@ itself), GitHub CI (build + 61-tool parity test) and release workflows.
 v0.7 (this tree) — Python host restored beside Rust (no build step needed), a loopback
 daemon plus a Freebuff Desktop skill (the desktop no longer loads MCP servers), and a
 40-minute session budget so no agent can run the tool continuously.
+v8 (this tree) — Photoshop CS3 removed outright (its ExtendScript bridge kept
+wedging the app); GIMP backend in its place, with batch Script-Fu proven live
+on GIMP 3.2.8, and the first end-to-end asset shipped: supply_crate built,
+rendered, validated and exported to GLB.
 
 ```text
 LLM (MCP client — or a Freebuff skill driving the loopback daemon)
