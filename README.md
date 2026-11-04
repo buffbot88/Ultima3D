@@ -171,7 +171,8 @@ completes with an exit code or fails loudly instead of wedging the editor:
   console), its `--version`, Script-Fu server reachability, and available
   presets. Never hangs: every probe is bounded.
 - `gimp_exec(script)` — runs Script-Fu in a throwaway batch GIMP
-  (`-i -b ... -b (gimp-quit 0)`) and returns its console output. Create,
+  (`--new-instance -i --batch-interpreter=plug-in-script-fu-eval -b ... [--quit]`)
+  and returns its console output. Create,
   modify, query — e.g. `(gimp-message "hi")` comes back as text.
 - `gimp_create_image(width, height, background, name)` — new RGB image with a
   filled background layer (`white`/`transparent`/`background`), saved as PNG

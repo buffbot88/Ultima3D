@@ -1,7 +1,9 @@
 """GIMP backend client (stdlib only): batch Script-Fu plus a server probe.
 
 GIMP ships a real CLI, so scripting goes through batch mode:
-`gimp -i -b '<script-fu>' -b '(gimp-quit 0)'`. Batch runs to completion with an
+`gimp --new-instance -i --batch-interpreter=plug-in-script-fu-eval [--quit]
+-b '<script-fu>'` (`--quit` is GIMP 3+, which otherwise stays resident as a
+background process; 2.x exits via `(gimp-quit 0)`). Batch runs to completion with an
 exit code — a failure arrives as text on stderr, and a hung GIMP is killed past
 the deadline. Nothing here can wedge the editor the way a socket bridge could.
 `live()` probes 127.0.0.1:10008 for a user-started Script-Fu server.
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -46,8 +49,12 @@ def exe_candidates() -> list[Path]:
     if override:
         return [Path(override)]
     found: list[Path] = []
-    for pattern in ("C:/Program Files/GIMP*/bin/gimp*.exe",
-                    "C:/Program Files (x86)/GIMP*/bin/gimp*.exe"):
+    patterns = ["C:/Program Files/GIMP*/bin/gimp*.exe",
+                "C:/Program Files (x86)/GIMP*/bin/gimp*.exe"]
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        patterns.append(local.replace("\\", "/") + "/Programs/GIMP*/bin/gimp*.exe")
+    for pattern in patterns:
         found += [Path(m) for m in glob.glob(pattern)]
     found.sort(key=lambda p: ("console" not in p.name.lower(), p.name.lower()))
     for name in ("gimp", "gimp-2.10", "gimp-3.0", "gimp-console-2.10"):
@@ -99,6 +106,18 @@ def version(timeout: float = 60.0) -> str | None:
     return lines[0].strip() if lines else None
 
 
+_GIMP_MAJOR: int | None = None
+
+
+def _major(timeout: float = 60.0) -> int:
+    """GIMP major version, probed once; assumes 3 when the probe says nothing."""
+    global _GIMP_MAJOR
+    if _GIMP_MAJOR is None:
+        m = re.search(r"version\s+(\d+)", version(timeout=timeout) or "")
+        _GIMP_MAJOR = int(m.group(1)) if m else 3
+    return _GIMP_MAJOR
+
+
 def live(timeout: float = 1.5) -> bool:
     """Is a Script-Fu server answering on 127.0.0.1:PORT? Connect-and-close only."""
     import socket
@@ -121,7 +140,10 @@ def run_batch(snippets: list[str], timeout: float = 180.0) -> dict:
     exe = exe_path()
     if exe is None:
         raise RuntimeError(f"GIMP not found; set {EXE_ENV} to a gimp exe")
-    cmd = [str(exe), "-i"]
+    cmd = [str(exe), "--new-instance", "-i",
+           "--batch-interpreter=plug-in-script-fu-eval"]
+    if _major() >= 3:
+        cmd.append("--quit")
     for snippet in snippets:
         cmd += ["-b", snippet]
     cmd += ["-b", "(gimp-quit 0)"]
@@ -153,17 +175,29 @@ def build_create(width: int, height: int, background: str, out_path: str | Path)
     w, h = int(width), int(height)
     if not (1 <= w <= 10000 and 1 <= h <= 10000):
         raise ValueError("width/height must each be 1..10000")
+    # Fill types as numbers: GIMP 3 script-fu never registered the *-FILL
+    # constants (BACKGROUND-FILL et al. are unbound there). Values are stable
+    # across 2.x/3.x: 0 foreground, 1 background, 2 white, 3 transparent.
     if key == "transparent":
-        fill = "(gimp-drawable-fill layer TRANSPARENT-FILL)"
+        fill = "(gimp-drawable-fill layer 3)"
     else:
         fill = (f"(gimp-context-set-background '{fills[key]}) "
-                "(gimp-drawable-fill layer BACKGROUND-FILL)")
+                "(gimp-drawable-fill layer 1)")
+    if _major() >= 3:
+        # 3.x moved the layer name to argument 2 and dropped the drawable
+        # from gimp-file-save.
+        layer_new = (f'(gimp-layer-new img "background" {w} {h} RGBA-IMAGE '
+                       '100 LAYER-MODE-NORMAL)')
+        save = (f"(gimp-file-save RUN-NONINTERACTIVE img {_q(out_path)} "
+                f"{_q(Path(out_path).name)})")
+    else:
+        layer_new = (f'(gimp-layer-new img {w} {h} RGBA-IMAGE "background" '
+                       '100 LAYER-MODE-NORMAL)')
+        save = (f"(gimp-file-save RUN-NONINTERACTIVE img layer {_q(out_path)} "
+                f"{_q(Path(out_path).name)})")
     return (f"(let* ((img (car (gimp-image-new {w} {h} RGB))) "
-            f"(layer (car (gimp-layer-new img {w} {h} RGBA-IMAGE "
-            f"\"background\" 100 LAYER-MODE-NORMAL)))) "
-            f"(gimp-image-insert-layer img layer 0 -1) {fill} "
-            f"(gimp-file-save RUN-NONINTERACTIVE img layer "
-            f"{_q(out_path)} {_q(Path(out_path).name)}) "
+            f"(layer (car {layer_new}))) "
+            f"(gimp-image-insert-layer img layer 0 -1) {fill} {save} "
             f"(gimp-image-delete img))")
 
 
@@ -184,6 +218,19 @@ def wrap_preset(name: str, image: str | Path | None,
         code = code.replace("%%INPUT%%", _q(image))  # type: ignore[arg-type]
     if needs_out:
         code = code.replace("%%OUTPUT%%", _q(output))  # type: ignore[arg-type]
+    # GIMP 3 renamed the query: gimp-image-get-base-type vs 2.x gimp-image-base-type.
+    code = code.replace("%%BASETYPE%%",
+                        "gimp-image-get-base-type" if _major() >= 3
+                        else "gimp-image-base-type")
+    # GIMP 3 dropped the drawable from gimp-file-save.
+    if _major() >= 3:
+        save = (f"(gimp-image-flatten img) (gimp-file-save RUN-NONINTERACTIVE img "
+                f"{_q(output)} {_q(Path(output).name)})")  # type: ignore[arg-type]
+    else:
+        save = ("(let ((layer (car (gimp-image-flatten img)))) (gimp-file-save "
+                f"RUN-NONINTERACTIVE img layer {_q(output)} "  # type: ignore[arg-type]
+                f"{_q(Path(output).name)})")  # type: ignore[arg-type]
+    code = code.replace("%%FLATTENSAVE%%", save)
     return code, f"preset:{name}"
 
 

@@ -80,6 +80,8 @@ try:
         assert "%%INPUT%%" in src and "%%OUTPUT%%" in src, name
     code, source = bridge.wrap_preset("prep_image", "C:\\in\\a.png", "C:/out/b.png")
     assert "%%INPUT%%" not in code and "%%OUTPUT%%" not in code, code[:120]
+    assert "%%BASETYPE%%" not in code and "base-type img" in code, code[:200]
+    assert "%%FLATTENSAVE%%" not in code and "gimp-file-save" in code, code[-300:]
     assert "C:/in/a.png" in code and "C:/out/b.png" in code, code[:160]
     assert source == "preset:prep_image", source
     try:
@@ -116,7 +118,8 @@ finally:
 # 9. create-image codegen is pure and validated
 try:
     code = bridge.build_create(1024, 768, "transparent", "C:/out/hero.png")
-    assert "gimp-image-new 1024 768" in code and "TRANSPARENT-FILL" in code, code[:160]
+    # fill types are numeric: GIMP 3 script-fu never registered the *-FILL names
+    assert "gimp-image-new 1024 768" in code and "gimp-drawable-fill layer 3" in code, code[:200]
     assert "C:/out/hero.png" in code, code[:200]
     good = dict(width=64, height=64, background="white", out_path="x.png")
     for bad in (dict(background="plaid"), dict(width=0), dict(height=20000)):
