@@ -174,17 +174,25 @@ headless texture synthesizer, so realism work never waits on the GUI app:
   `__quit__` to stop the bridge and hand Photoshop back.
 - `photoshop_create_image(width, height, background, name)` — live File > New
   (`white`/`transparent`/`background`); returns Photoshop's confirmation.
-- `photoshop_run_script(script)` — fire-and-forget a bundled JSX preset
+- `photoshop_run_script(script)` — run a bundled JSX preset through the bridge
   (`prep_texture`: flatten + RGB 8-bit; `export_png`: PNG copy beside the
-  PSD) or inline ExtendScript through `Photoshop.exe`. Refuses code that
-  never touches the app instead of launching blind.
+  PSD, exported from a duplicate so the open file keeps its layers) or inline
+  ExtendScript, and return its result. Refuses code that never touches the app.
 
 Live control needs one manual step per Photoshop session (COM is unregistered
 in portable builds, so this socket bridge replaces it): in the open Photoshop,
 File > Scripts > Browse > `photoshop/daemon/ultima3d_bridge.jsx`
 (the exact path is in `photoshop_status` as `bridge_script`). While it runs,
 Photoshop is in agent mode; `live:true` in `photoshop_status` confirms the
-connection. `ULTIMA3D_PHOTOSHOP_PORT` overrides the 8767 default.
+connection with a real ping. `ULTIMA3D_PHOTOSHOP_PORT` overrides the 8767 default.
+
+The bridge speaks one JSON object per line: a request is answered as soon as its
+line arrives, with no counted socket read to block on, and a bare connect/close
+probe is ignored. It hands Photoshop back by itself after 5 idle minutes or 40
+minutes in total, restoring dialog mode on the way out, so a forgotten bridge
+cannot leave CS3 frozen. Presets run through that bridge — `Photoshop.exe` is
+never launched with a script as an argument, because CS3 treats the argument as
+a document to open and that launch is what wedged the app.
 
 Set `ULTIMA3D_PHOTOSHOP` to override the exe path (default: the
 `Adobe Photoshop CS3 Portable` install). All calls degrade gracefully when
@@ -536,3 +544,5 @@ diff against a recipe rather than a rewrite of geometry.
   by design and refuses any other bind address.
 - Restarting the server begins a new 40-minute budget: the cap bounds one run, not a rolling
   window across restarts.
+- Portable Photoshop CS3 has no usable COM channel, so live Photoshop work needs the bridge
+  loaded in that session; the presets cannot run headlessly, and they are not launched for you.

@@ -27,7 +27,7 @@ def photoshop_exec(code: str) -> str:
     """Run ExtendScript in the OPEN Photoshop and return its result (live control).
 
     Requires ultima3d_bridge.jsx running inside Photoshop (see photoshop_status
-    bridge_script). The result is the stringified value of your code, e.g.
+    bridge_script); it hands Photoshop back after 5 idle minutes. The result is the stringified value of your code, e.g.
     code='app.documents.length' -> how many docs are open. Return JSON from
     your code for structured readback. Photoshop errors come back as
     {"ok": false, ...} instead of hanging. Send op quit via code='__quit__'
@@ -60,8 +60,10 @@ def photoshop_create_image(width: int = 1024, height: int = 1024,
 def photoshop_run_script(script: str) -> str:
     """Run a JSX preset (prep_texture, export_png) or inline ExtendScript in CS3.
 
-    Fire-and-forget: portable CS3 reports no completion signal, so this stages
-    the script, launches Photoshop.exe with it, and returns immediately.
+    Goes through the live bridge, so the result comes back like photoshop_exec.
+    Portable CS3 has no COM server and Photoshop.exe cannot be handed a script
+    as an argument — launching it that way is what wedged the app — so this
+    refuses with the setup step instead of starting a second Photoshop.
     """
     try:
         return json.dumps(bridge.run_script(script))

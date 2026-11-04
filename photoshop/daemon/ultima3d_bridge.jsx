@@ -1,15 +1,27 @@
 // ultima3d_bridge.jsx — live-control bridge for Photoshop CS3 (portable-safe).
 //
 // Run ONCE inside the open Photoshop: File > Scripts > Browse > this file.
-// It listens on 127.0.0.1:8767. Each connection sends one JSON message like
-//   {"id":1,"op":"exec","code":"app.documents.add(1024,1024)"}
-// and gets one JSON reply like {"id":1,"ok":true,"result":"..."}.
+// It listens on 127.0.0.1:8767 and speaks one JSON object per LINE:
+//   request  {"id":1,"op":"exec","code":"app.documents.length"}
+//   reply    {"id":1,"ok":true,"result":"1"}
 // ops: "exec" runs ExtendScript and returns the stringified result,
 //      "ping" answers with the app version, "quit" stops the bridge.
 //
-// While this runs Photoshop is in agent mode (UI waits on the listener).
-// Send {"op":"quit"} to hand Photoshop back. No system changes, no COM.
+// Why line framing: CS3's counted read waits for the FULL count, so the old
+// read-until-eof loop never returned on an idle or empty connection —
+// Photoshop's only thread stayed blocked and Windows reported the app as not
+// responding. readln()/writeln() return as soon as one line arrives, and a bare
+// connect/close probe (the client's health check) is ignored without touching
+// the socket.
+//
+// Photoshop is in agent mode while this runs, so it hands itself back: after
+// IDLE_SECONDS without a request, or MAX_MINUTES in total. Dialog mode is
+// restored on every exit path, including "quit". No system changes, no COM.
 var PORT = 8767;
+var IDLE_SECONDS = 300;   // 5 min with no request -> hand Photoshop back
+var MAX_MINUTES = 40;     // absolute cap, mirrors the host session budget
+
+var prevDialogs = app.displayDialogs;
 app.displayDialogs = DialogModes.NO;
 
 function esc(s) {
@@ -17,28 +29,43 @@ function esc(s) {
         .replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t") + '"';
 }
 
-function sendReply(conn, id, ok, payload) {
-    conn.write('{"id":' + id + ',"ok":' + (ok ? "true" : "false") +
-        ',' + (ok ? '"result":' : '"error":') + esc(payload) + '}');
-    // CS3 drops unread-on-close send buffers: let the bytes leave first.
-    $.sleep(500);
-    conn.close();
+function nowMs() {
+    return new Date().getTime();
+}
+
+function reply(conn, id, ok, payload) {
+    try {
+        conn.writeln('{"id":' + id + ',"ok":' + (ok ? "true" : "false") +
+            ',' + (ok ? '"result":' : '"error":') + esc(payload) + '}');
+        $.sleep(50);   // CS3 drops unread-on-close buffers: let the line leave
+    } catch (e) {}
+    try { conn.close(); } catch (e2) {}
 }
 
 var listener = new Socket();
-if (!listener.listen(PORT)) {
-    // Port busy: a bridge is already running. Nothing to do.
-} else {
+var armed = false;
+try { armed = listener.listen(PORT); } catch (e0) { armed = false; }
+
+if (armed) {
+    var started = nowMs();
+    var last = started;
     var running = true;
     while (running) {
-        var conn = listener.poll();
-        if (conn === null) { $.sleep(100); continue; }
-        $.sleep(50);
+        var conn = null;
+        try { conn = listener.poll(); } catch (e1) { conn = null; }
+        if (conn === null) {
+            if (nowMs() - last > IDLE_SECONDS * 1000) break;
+            if (nowMs() - started > MAX_MINUTES * 60000) break;
+            $.sleep(100);
+            continue;
+        }
+        last = nowMs();
         var text = "";
-        while (!conn.eof) {
-            var chunk = conn.read(32767);
-            if (chunk === "") break;
-            text += chunk;
+        try { text = conn.readln(); } catch (e2) { text = ""; }
+        text = (text === null || text === undefined) ? "" : String(text);
+        if (text.replace(/^\s+|\s+$/g, "") === "") {
+            try { conn.close(); } catch (e3) {}   // health probe, no request
+            continue;
         }
         var id = 0, ok = true, out = "";
         try {
@@ -46,12 +73,16 @@ if (!listener.listen(PORT)) {
             id = req.id;
             if (req.op === "quit") { out = "bridge stopped"; running = false; }
             else if (req.op === "ping") { out = "pong CS3 " + app.version; }
-            else {
+            else if (req.op === "exec") {
                 var v = eval(String(req.code));
                 out = (v === undefined) ? "undefined" : String(v);
-            }
-        } catch (e) { ok = false; out = String(e); }
-        try { sendReply(conn, id, ok, out); } catch (e2) {}
+            } else { ok = false; out = "unknown op: " + req.op; }
+        } catch (e4) { ok = false; out = String(e4); }
+        reply(conn, id, ok, out);
     }
-    listener.close();
+    try { listener.close(); } catch (e5) {}
 }
+
+// Hand Photoshop back in a usable state whatever way the loop ended.
+app.displayDialogs = prevDialogs;
+try { app.refresh(); } catch (e6) {}

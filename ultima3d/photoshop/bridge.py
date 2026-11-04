@@ -1,16 +1,16 @@
-"""CS3 bridge client (stdlib only): locate the exe, probe COM briefly, launch JSX.
+"""CS3 bridge client (stdlib only): locate the exe, probe COM briefly, drive JSX.
 
 Nothing here blocks on the Photoshop GUI. COM probing runs in a thread with a
-short timeout because Dispatch() will try to spin up the GUI app; script
-launches use Popen without waiting.
+short timeout because Dispatch() will try to spin up the GUI app, and every
+script runs through the live bridge inside Photoshop — CS3 cannot be handed a
+script on the command line. The bridge speaks one JSON object per line, and the
+health check is a real ping, so a wedged bridge is reported instead of assumed.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
 import os
-import subprocess
-import tempfile
 from pathlib import Path
 
 EXE_ENV = "ULTIMA3D_PHOTOSHOP"
@@ -19,9 +19,29 @@ DEFAULT_EXE = (
 )
 PORT_ENV = "ULTIMA3D_PHOTOSHOP_PORT"
 DEFAULT_PORT = 8767
-DAEMON_SCRIPT = (Path(__file__).resolve().parent / "daemon" / "ultima3d_bridge.jsx")
+SCRIPTS_ENV = "ULTIMA3D_PHOTOSHOP_SCRIPTS"
 
-SCRIPT_DIR = Path(__file__).resolve().parent / "scripts"
+_PACKAGE_DIR = Path(__file__).resolve().parent      # ultima3d/photoshop
+_REPO_ROOT = _PACKAGE_DIR.parents[1]                # repo root
+
+
+def scripts_root() -> Path:
+    """Where the JSX sources live: env override, repo `photoshop/`, then packaged.
+
+    The repo-root tree is the single source of truth — the packaged copy this
+    module used to read drifted from the one the README told users to run.
+    """
+    override = os.environ.get(SCRIPTS_ENV)
+    if override:
+        return Path(override)
+    repo = _REPO_ROOT / "photoshop"
+    if (repo / "daemon" / "ultima3d_bridge.jsx").is_file():
+        return repo
+    return _PACKAGE_DIR
+
+
+DAEMON_SCRIPT = scripts_root() / "daemon" / "ultima3d_bridge.jsx"
+SCRIPT_DIR = scripts_root() / "scripts"
 
 PRESETS = sorted(p.stem for p in SCRIPT_DIR.glob("*.jsx")) if SCRIPT_DIR.is_dir() else []
 
@@ -63,29 +83,52 @@ def port() -> int:
         return DEFAULT_PORT
 
 
+def _read_line(sock, limit: int = 1_000_000) -> bytes:
+    """Read one newline-terminated frame (or whatever arrives before close)."""
+    buf = bytearray()
+    while b"\n" not in buf and len(buf) < limit:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf).split(b"\n", 1)[0]
+
+
 def live(timeout: float = 1.5) -> bool:
-    """Quick connect test: is the bridge script running inside Photoshop?"""
+    """Is the bridge script running inside Photoshop? Asks with a real ping.
+
+    The old check connected and closed without sending anything; the bridge then
+    blocked in read() on that empty socket and Photoshop froze. A bare connect is
+    now harmless, but only an answered ping proves the bridge is healthy.
+    """
+    import json
     import socket
 
     try:
-        s = socket.create_connection(("127.0.0.1", port()), timeout=timeout)
-        s.close()
-        return True
+        with socket.create_connection(("127.0.0.1", port()), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(json.dumps({"id": 0, "op": "ping"}).encode("utf-8") + b"\n")
+            raw = _read_line(s).decode("utf-8", "replace")
     except OSError:
         return False
+    if '"ok":true' not in raw.replace(" ", ""):
+        return False
+    return True
 
 
 def call(code: str | None = None, op: str = "exec", timeout: float = 60.0) -> dict:
     """Run ExtendScript in the open Photoshop via the bridge; return its reply.
 
     Raises RuntimeError with next-step instructions when the bridge script is
-    not running, or when Photoshop itself reports an ExtendScript error.
+    not running, does not answer, or when Photoshop reports an ExtendScript
+    error. The reply is one JSON line, so a timeout here means the bridge is
+    wedged rather than slow.
     """
     import json
     import socket
 
     p = port()
-    req = json.dumps({"id": 1, "op": op, "code": code or ""})
+    req = json.dumps({"id": 1, "op": op, "code": code or ""}).encode("utf-8") + b"\n"
     try:
         s = socket.create_connection(("127.0.0.1", p), timeout=min(timeout, 10.0))
     except OSError:
@@ -94,18 +137,14 @@ def call(code: str | None = None, op: str = "exec", timeout: float = 60.0) -> di
             f"Photoshop: File > Scripts > Browse > {DAEMON_SCRIPT}") from None
     with s:
         s.settimeout(timeout)
-        s.sendall(req.encode("utf-8"))
         try:
-            s.shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
-        buf = bytearray()
-        while True:
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    raw = bytes(buf).decode("utf-8", "replace")
+            s.sendall(req)
+            raw = _read_line(s).decode("utf-8", "replace")
+        except OSError as e:
+            raise RuntimeError(
+                f"the Photoshop bridge did not answer within {timeout:.0f}s ({e}). "
+                f"Quit the old bridge and reload it: File > Scripts > Browse > "
+                f"{DAEMON_SCRIPT}") from None
     if not raw.strip():
         raise RuntimeError(
             "empty reply from the Photoshop bridge — reload the current daemon: "
@@ -156,12 +195,13 @@ def status() -> dict:
     }
 
 
-def run_script(name_or_code: str, timeout: float = 8.0) -> dict:
-    """Fire-and-forget a JSX preset (by stem) or inline code via Photoshop.exe.
+def run_script(name_or_code: str, timeout: float = 60.0) -> dict:
+    """Run a JSX preset (by stem) or inline ExtendScript in the open Photoshop.
 
-    Returns the staged script path and whether the GUI was launched; never
-    waits for Photoshop to finish, because portable CS3 has no script-done
-    signal over this channel.
+    Goes through the live bridge, so the result comes back like photoshop_exec.
+    Portable CS3 has no COM server and Photoshop.exe cannot be handed a script
+    as an argument — launching it that way is what wedged the app — so this
+    refuses with the setup step instead of starting a second Photoshop.
     """
     exe = exe_path()
     if not exe.is_file():
@@ -175,11 +215,5 @@ def run_script(name_or_code: str, timeout: float = 8.0) -> dict:
         source = "inline"
     if "app." not in code and "activeDocument" not in code:
         raise ValueError("refusing to launch Photoshop with code that never touches app/activeDocument")
-    fd, tmppath = tempfile.mkstemp(prefix="ultima3d_", suffix=".jsx")
-    with open(fd, "w", encoding="utf-8") as f:
-        f.write(code)
-    try:
-        subprocess.Popen([str(exe), tmppath])  # noqa: S603 — exe path is user-configured
-    except OSError as e:
-        raise RuntimeError(f"failed to launch Photoshop.exe: {e}") from e
-    return {"launched": True, "source": source, "script": tmppath}
+    resp = call(code, timeout=timeout)
+    return {"ok": True, "source": source, "result": resp.get("result")}

@@ -1,6 +1,11 @@
 """Photoshop CS3 module test: headless texture synthesis + offline-tolerant bridge."""
+import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, ".")
@@ -64,16 +69,78 @@ try:
 except ValueError:
     print("  [ok] unknown preset raises ValueError")
 
-# 6. daemon script exists and speaks the bridge protocol
+# 6. daemon script exists and speaks the line-framed bridge protocol
 try:
-    daemon = Path("ultima3d/photoshop/daemon/ultima3d_bridge.jsx")
+    daemon = Path("photoshop/daemon/ultima3d_bridge.jsx")
     src = daemon.read_text(encoding="utf-8")
     assert daemon.is_file()
-    for token in ("listen", '"exec"', '"ping"', '"quit"', "conn.write", "$.sleep"):
+    for token in ("listen", '"exec"', '"ping"', '"quit"', "readln", "writeln",
+                  "IDLE_SECONDS", "MAX_MINUTES", "app.displayDialogs = prevDialogs"):
         assert token in src, f"daemon missing {token}"
-    print("  [ok] bridge daemon present with exec/ping/quit protocol")
+    assert "conn.read(" not in src, "daemon still uses the blocking counted read"
+    assert bridge.DAEMON_SCRIPT.resolve() == daemon.resolve(), bridge.DAEMON_SCRIPT
+    print("  [ok] bridge daemon line-framed, idle hand-back, single source of truth")
 except Exception as e:
     failures.append(f"daemon: {e}")
+
+
+# 6b. the client speaks that protocol: one request line out, one reply line in
+def stub(reply_line: bytes):
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    seen = {}
+
+    def serve():
+        conn, _ = srv.accept()
+        buf = b""
+        while b"\n" not in buf:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        seen["line"] = buf
+        if reply_line:
+            conn.sendall(reply_line)
+        conn.close()
+        srv.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    return srv.getsockname()[1], seen, t
+
+
+try:
+    p, seen, t = stub(b'{"id":1,"ok":true,"result":"1"}\n')
+    os.environ["ULTIMA3D_PHOTOSHOP_PORT"] = str(p)
+    r = bridge.call("app.documents.length", timeout=5.0)
+    t.join(2)
+    assert r["ok"] and r["result"] == "1", r
+    assert seen["line"].endswith(b"\n"), seen["line"][:80]
+    assert json.loads(seen["line"])["code"] == "app.documents.length"
+    print("  [ok] call() sends one newline-framed request and parses the reply")
+
+    p, seen, t = stub(b'{"id":0,"ok":true,"result":"pong CS3 10.0"}\n')
+    os.environ["ULTIMA3D_PHOTOSHOP_PORT"] = str(p)
+    assert bridge.live(timeout=3.0) is True
+    t.join(2)
+    assert json.loads(seen["line"])["op"] == "ping", seen["line"][:80]
+    print("  [ok] live() verifies with a ping instead of a bare connect")
+
+    p, seen, t = stub(b'{"id":1,"ok":true,"result":"wrote C:/x.png"}\n')
+    os.environ["ULTIMA3D_PHOTOSHOP_PORT"] = str(p)
+    os.environ["ULTIMA3D_PHOTOSHOP"] = sys.executable
+    r = bridge.run_script("export_png", timeout=5.0)
+    t.join(2)
+    assert r["source"] == "preset:export_png" and r["result"].startswith("wrote"), r
+    assert b"ultima3d export_png" in seen["line"], seen["line"][:120]
+    print("  [ok] run_script() routes the preset through the bridge, no second exe")
+except Exception as e:
+    failures.append(f"protocol: {e}")
+finally:
+    os.environ.pop("ULTIMA3D_PHOTOSHOP_PORT", None)
+    os.environ.pop("ULTIMA3D_PHOTOSHOP", None)
 
 # 7. live bridge absent -> fast, clean error naming the setup step (no hang)
 os.environ["ULTIMA3D_PHOTOSHOP_PORT"] = "59998"
@@ -108,9 +175,29 @@ try:
 except Exception as e:
     failures.append(f"build_create: {e}")
 
+# 9. the JSX sources parse (ExtendScript is ES3, a subset Node accepts;
+#    node --check refuses the .jsx extension, so check a .js copy)
+import tempfile
+
+node = shutil.which("node")
+if node:
+    for jsx in sorted(Path("photoshop").rglob("*.jsx")):
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                probe = Path(tmp) / "probe.js"
+                probe.write_text(jsx.read_text(encoding="utf-8"), encoding="utf-8")
+                r = subprocess.run([node, "--check", str(probe)],
+                                   capture_output=True, text=True, timeout=30)
+            assert r.returncode == 0, (r.stderr or r.stdout).strip()[:200]
+            print(f"  [ok] {jsx.as_posix()} parses")
+        except Exception as e:
+            failures.append(f"jsx syntax {jsx}: {e}")
+else:
+    print("  [skip] node not on PATH; JSX syntax not checked")
+
 if failures:
     print(f"\nPHOTOSHOP TEST FAILED ({len(failures)}):")
     for f in failures:
         print(f"  - {f}")
     sys.exit(1)
-print(f"\nPHOTOSHOP TEST OK ({len(PRESETS)} presets synthesize + bridge offline-tolerant)")
+print(f"\nPHOTOSHOP TEST OK ({len(PRESETS)} presets synthesize + line-framed bridge)")
