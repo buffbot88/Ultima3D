@@ -1,4 +1,4 @@
-"""Headless tileable texture synthesis (stdlib only, no Photoshop needed).
+"""Headless tileable texture synthesis (stdlib only, editor-independent).
 
 Value-noise fBm on a wrapping lattice, so every map tiles seamlessly. For each
 preset we emit an albedo / roughness / normal trio that drops straight into

@@ -2,7 +2,7 @@
 
 One server, four backends: procedural asset compiler (background Blender
 worker), live Blender GUI tools (vendored under ultima3d.live), Godot
-editor tools (ultima3d.godot), and Photoshop CS3 tools (ultima3d.photoshop).
+editor tools (ultima3d.godot), and GIMP tools (ultima3d.gimp).
 Backends degrade gracefully offline.
 
 Config via env:
@@ -47,10 +47,10 @@ if __package__ in (None, ""):
 from .registry import mcp
 from .session import SESSION, SessionExpired
 
-# Side-effect imports: register live-Blender + Godot + Photoshop tools on the same server.
+# Side-effect imports: register live-Blender + Godot + GIMP tools on the same server.
 from .live import server as _live_server  # noqa: F401
 from .godot import tools as _godot_tools  # noqa: F401
-from .photoshop import tools as _photoshop_tools  # noqa: F401
+from .gimp import tools as _gimp_tools  # noqa: F401
 
 _HERE = Path(__file__).resolve().parent
 # v0.6 moved the geometry worker to blender/worker.py; it still runs inside Blender.

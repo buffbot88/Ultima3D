@@ -3,7 +3,7 @@
 AI-directed procedural 3D synthesis: the LLM owns **intent and visual judgement**, the
 One `ultima3d` server — stdio MCP, or the loopback daemon a Freebuff skill drives — exposes
 61 tools: 15 procedural asset tools, 32 live-Blender GUI tools, 6 Godot editor tools,
-5 Photoshop CS3 tools, and 3 pipeline tools — plus the `asset_creation_strategy` prompt.
+5 GIMP tools, and 3 pipeline tools — plus the `asset_creation_strategy` prompt.
 
 **Milestones.** v0.1 — deterministic procedural asset compiler proven.
 v0.2 — trustworthy game-asset compiler: measurements are asset-wide, budgets
@@ -63,7 +63,7 @@ tool is controllable without a cargo build.
 
 All 61 are registered on the one server, reachable as stdio MCP or over the daemon: the 15
 procedural tools below, plus `ultima3d_status_all`, `export_asset_to_godot` and
-`review_asset_loop` (pipeline), 6 `godot_*` tools, 5 `photoshop_*` tools, and 32 live-Blender
+`review_asset_loop` (pipeline), 6 `godot_*` tools, 5 `gimp_*` tools, and 32 live-Blender
 GUI tools.
 
 | Tool | Purpose |
@@ -156,47 +156,35 @@ keys. Chains survive baking to the existing PNG channels. Verified by
 `tests/texture_test.py` (each preset builds, validates, renders; unknown
 name falls back; rebuild is deterministic).
 
-## Photoshop CS3
+## GIMP
 
-The `ultima3d.photoshop` backend pairs your portable CS3 install with a
-headless texture synthesizer, so realism work never waits on the GUI app:
+The `ultima3d.gimp` backend pairs your GIMP install (2.10 or 3.x) with the same
+headless texture synthesizer, so texture work never waits on the GUI app — and
+unlike the old Photoshop CS3 bridge, GIMP ships a real CLI, so every call
+completes with an exit code or fails loudly instead of wedging the editor:
 
-- `photoshop_make_texture(preset, size, seed)` — stdlib-only seamless
-  albedo/rough/normal PNG trios under `output/textures/` (Photoshop never
+- `gimp_make_texture(preset, size, seed)` — stdlib-only seamless
+  albedo/rough/normal PNG trios under `output/textures/` (GIMP never
   opens). Presets: `stone`, `wood_grain`, `noise`. Same seed rebuilds
-  identical bytes; verified by `tests/photoshop_test.py`.
-- `photoshop_status()` — reports the portable exe presence, COM
-  reachability (portables normally unregistered — that is state, not error),
-  and available JSX presets. Never hangs: the COM probe runs bounded.
-- `photoshop_exec(code)` — **live control**: runs ExtendScript in the open
-  Photoshop and returns its result (needs the bridge below). Create, modify,
-  query — e.g. `code='app.documents.length'` reports open docs. Send
-  `__quit__` to stop the bridge and hand Photoshop back.
-- `photoshop_create_image(width, height, background, name)` — live File > New
-  (`white`/`transparent`/`background`); returns Photoshop's confirmation.
-- `photoshop_run_script(script)` — run a bundled JSX preset through the bridge
-  (`prep_texture`: flatten + RGB 8-bit; `export_png`: PNG copy beside the
-  PSD, exported from a duplicate so the open file keeps its layers) or inline
-  ExtendScript, and return its result. Refuses code that never touches the app.
+  identical bytes; verified by `tests/gimp_test.py`.
+- `gimp_status()` — reports the exe found (GIMP 3 preferred, then 2.10
+  console), its `--version`, Script-Fu server reachability, and available
+  presets. Never hangs: every probe is bounded.
+- `gimp_exec(script)` — runs Script-Fu in a throwaway batch GIMP
+  (`-i -b ... -b (gimp-quit 0)`) and returns its console output. Create,
+  modify, query — e.g. `(gimp-message "hi")` comes back as text.
+- `gimp_create_image(width, height, background, name)` — new RGB image with a
+  filled background layer (`white`/`transparent`/`background`), saved as PNG
+  under `output/gimp/`; returns the file path.
+- `gimp_run_script(script, image, output)` — runs a bundled `.scm` preset
+  against an image file (`prep_image`: flatten + RGB 8-bit copy; `export_png`:
+  PNG copy beside the source, which is never modified) or inline Script-Fu,
+  and returns the console output. Refuses code that never touches GIMP.
 
-Live control needs one manual step per Photoshop session (COM is unregistered
-in portable builds, so this socket bridge replaces it): in the open Photoshop,
-File > Scripts > Browse > `photoshop/daemon/ultima3d_bridge.jsx`
-(the exact path is in `photoshop_status` as `bridge_script`). While it runs,
-Photoshop is in agent mode; `live:true` in `photoshop_status` confirms the
-connection with a real ping. `ULTIMA3D_PHOTOSHOP_PORT` overrides the 8767 default.
-
-The bridge speaks one JSON object per line: a request is answered as soon as its
-line arrives, with no counted socket read to block on, and a bare connect/close
-probe is ignored. It hands Photoshop back by itself after 5 idle minutes or 40
-minutes in total, restoring dialog mode on the way out, so a forgotten bridge
-cannot leave CS3 frozen. Presets run through that bridge — `Photoshop.exe` is
-never launched with a script as an argument, because CS3 treats the argument as
-a document to open and that launch is what wedged the app.
-
-Set `ULTIMA3D_PHOTOSHOP` to override the exe path (default: the
-`Adobe Photoshop CS3 Portable` install). All calls degrade gracefully when
-CS3 is closed or absent.
+Set `ULTIMA3D_GIMP` to override the exe path. Batch covers create, convert
+and export runs; if you also run a Script-Fu server (default port 10008,
+`ULTIMA3D_GIMP_PORT`), `live:true` in `gimp_status` confirms it for live
+control of the open app. All calls degrade gracefully when GIMP is absent.
 
 Every build maintains an in-memory **asset manifest**: each recipe node registers the
 objects it created, so all downstream operations (inspect, materials, validate, finalize,
@@ -392,7 +380,7 @@ finalize_asset(name="medieval_mailbox")
 
 ```text
 ultima3d/                Python host: server.py (18 tools), live/ (32), godot/ (6),
-                         photoshop/ (5), session.py (40-min budget), daemon.py (loopback
+                         gimp/ (5), session.py (40-min budget), daemon.py (loopback
                          JSON), skill.py (shell bridge + skill installer)
 skills/ultima3d/SKILL.md the Freebuff Desktop skill (installed into ~/.agents/skills)
 rust/                    Rust workspace (the optional fast host: server + tray)
@@ -404,9 +392,8 @@ blender/
                  Python: it executes inside Blender's embedded interpreter,
                  which exposes no Rust API)
   addon.py       live-Blender GUI addon (install into the user's Blender)
-photoshop/
-  daemon/        ExtendScript TCP bridge (File > Scripts > Browse in open CS3)
-  scripts/       bundled JSX presets (prep_texture, export_png)
+gimp/
+  scripts/       bundled Script-Fu presets (prep_image, export_png)
 godot/addon/     Godot editor plugin (install into your project)
 output/icon_work/render_icon.py  renders the tray mark (Blender, headless)
 ```
@@ -481,9 +468,9 @@ One MCP server, four backends — all degrading gracefully when their editor is 
   running Godot editor over `GODOT_MCP_URL` (default `http://127.0.0.1:8765/mcp`).
   Copy `godot/addon/` into your Godot project's `addons/` folder and enable
   **Ultima3D Godot Bridge** under Project Settings → Plugins.
-- **Photoshop CS3** (`photoshop_status`, `photoshop_exec`, `photoshop_make_texture`, …)
-  — portable-CS3 live control over the ExtendScript bridge plus a headless
-  texture synthesizer (see the Photoshop CS3 section).
+- **GIMP** (`gimp_status`, `gimp_exec`, `gimp_make_texture`, …) — batch
+  Script-Fu that always completes or fails loudly, plus a headless texture
+  synthesizer (see the GIMP section).
 - **Pipeline** (`ultima3d_status_all`, `export_asset_to_godot`, `review_asset_loop`)
   — status fan-out, GLB handoff to a Godot project, validate+critic review gate.
 
@@ -544,5 +531,5 @@ diff against a recipe rather than a rewrite of geometry.
   by design and refuses any other bind address.
 - Restarting the server begins a new 40-minute budget: the cap bounds one run, not a rolling
   window across restarts.
-- Portable Photoshop CS3 has no usable COM channel, so live Photoshop work needs the bridge
-  loaded in that session; the presets cannot run headlessly, and they are not launched for you.
+-GIMP batch runs headlessly with no GUI; live control of the open app needs a
+  user-started Script-Fu server on 127.0.0.1:10008.

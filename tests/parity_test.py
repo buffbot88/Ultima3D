@@ -27,9 +27,9 @@ REQUIRED = {
     # Godot
     "godot_status", "godot_scene_tree", "godot_run_project", "godot_stop_project",
     "godot_debug_output", "godot_screenshot",
-    # Photoshop CS3
-    "photoshop_status", "photoshop_exec", "photoshop_create_image", "photoshop_run_script",
-    "photoshop_make_texture",
+    # GIMP (batch Script-Fu + headless textures)
+    "gimp_status", "gimp_exec", "gimp_create_image", "gimp_run_script",
+    "gimp_make_texture",
 }
 
 failures = []

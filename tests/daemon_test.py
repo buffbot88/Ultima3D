@@ -71,7 +71,7 @@ def main():
         _, listed = request(f"{base}/tools")
         names = {tool["name"] for tool in listed.get("tools", [])}
         check("GET /tools lists create_3d and godot_status",
-              {"create_3d", "godot_status"} <= names, f"{len(names)} tools")
+              {"create_3d", "godot_status", "gimp_status"} <= names, f"{len(names)} tools")
 
         code, body = request(f"{base}/call", {"tool": "godot_status", "args": {}})
         check("POST /call dispatches a tool", code == 200 and body.get("ok") is True,

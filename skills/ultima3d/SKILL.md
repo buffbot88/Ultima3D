@@ -1,6 +1,6 @@
 ---
 name: ultima3d
-description: Builds, renders, inspects, refines, validates and exports game-ready 3D assets in Blender from parametric recipes (GLB, LODs, collision hull, baked PBR), and can drive live Blender, Godot 4 and Photoshop CS3. Use when the user wants a 3D model, prop, weapon, building, vista or environment, a GLB for a game, triangle/dimension measurements, a render to look at, or a Godot/Photoshop handoff.
+description: Builds, renders, inspects, refines, validates and exports game-ready 3D assets in Blender from parametric recipes (GLB, LODs, collision hull, baked PBR), and can drive live Blender, Godot 4 and GIMP. Use when the user wants a 3D model, prop, weapon, building, vista or environment, a GLB for a game, triangle/dimension measurements, a render to look at, or a Godot/GIMP handoff.
 license: MIT
 compatibility: Requires this repo on the user's own machine, Blender 5.2 installed, and Python 3.10+ with mcp and httpx. Serves 127.0.0.1 only; cannot run in a cloud workspace.
 metadata:
@@ -101,8 +101,9 @@ Pizza, Hyper3D Rodin, Hunyuan3D) and the rest, all driving the user's **open** B
 `godot_debug_output`, `godot_screenshot` (bridge at `GODOT_MCP_URL`, default
 `http://127.0.0.1:8765/mcp`).
 
-**Photoshop CS3 (5)** — `photoshop_status`, `photoshop_exec`, `photoshop_create_image`,
-`photoshop_run_script`, `photoshop_make_texture` (headless texture synth, no Photoshop needed).
+**GIMP (5)** — `gimp_status`, `gimp_exec`, `gimp_create_image`,
+`gimp_run_script`, `gimp_make_texture` (headless texture synth, no GIMP needed).
+Batch Script-Fu always completes or fails loudly; nothing wedges the editor.
 
 Documented defaults: `finalize_asset` uses `triangle_budget=8000`, `collision="auto"`,
 `texture_resolution=1024`, `channels=[albedo, normal, roughness]`, `bake=True`.
@@ -134,7 +135,7 @@ fence, tree, weapon_blade, weapon_handle, terrain, scatter, skydome`.
 | Live tools time out | Open Blender, enable the `blender/addon.py` addon, Start MCP Server (port 9876) |
 | `session budget exhausted` | The 40-minute cap is spent: report and stop; a restart needs the user's go-ahead |
 | Render paths but no judgement | Actually open the PNGs; never claim a look you did not see |
-| Godot/Photoshop tools `ok: false` | Those editors are offline — that is state, not a crash |
+| Godot/GIMP tools `ok: false` | Those editors are offline — that is state, not a crash |
 
 ## 7. Rules
 
