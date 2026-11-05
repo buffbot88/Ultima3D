@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import json
 import os
 import queue
@@ -62,6 +63,10 @@ BLENDER = os.environ.get(
 )
 OUT_DIR = Path(os.environ.get("ULTIMA3D_OUT", Path.cwd() / "output"))
 CALL_TIMEOUT = float(os.environ.get("ULTIMA3D_CALL_TIMEOUT", "600"))
+# Startup is handshaked with its own short deadline: a worker that never answers
+# the first ping is a startup failure, not a 10-minute job.
+START_TIMEOUT = float(os.environ.get("ULTIMA3D_START_TIMEOUT", "120"))
+STDERR_TAIL_LINES = 12
 
 # ---------------------------------------------------------------------------
 # Worker process management: persistent blender --background, JSON lines.
@@ -75,14 +80,53 @@ class Worker:
         self._id = 0
         self._lines: queue.Queue[str] = queue.Queue()
         self._reader: threading.Thread | None = None
+        self._stderr_reader: threading.Thread | None = None
+        # Bounded copy of the worker's stderr, so a death can be explained.
+        self._stderr_tail: collections.deque[str] = collections.deque(maxlen=STDERR_TAIL_LINES)
+        self._starting = False
+
+    def _stderr_text(self) -> str:
+        """Last stderr lines, or an honest note when the worker said nothing."""
+        if not self._stderr_tail:
+            return "(blender wrote no stderr)"
+        return "last stderr:\n" + "\n".join(self._stderr_tail)
+
+    def _stderr_log_path(self) -> Path:
+        return OUT_DIR / "worker.log"
+
+    def _read_stderr(self, proc, tail):
+        """Drain the worker's stderr; a full pipe would otherwise block Blender."""
+        log = self._stderr_log_path()
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(log, "a", encoding="utf-8", errors="replace")
+        except OSError:
+            handle = None
+        try:
+            for raw in proc.stderr:
+                line = raw.rstrip("\n")
+                tail.append(line)
+                if handle is not None:
+                    handle.write(line + "\n")
+                    handle.flush()
+        finally:
+            if handle is not None:
+                handle.close()
 
     def _start(self):
         if not Path(BLENDER).is_file():
             raise ToolError(f"blender not found at {BLENDER!r}; set ULTIMA3D_BLENDER")
+        # A missing script is a configuration error, not a Blender crash: name it
+        # here instead of spawning a Blender that dies for reasons never shown.
+        if not Path(WORKER).is_file():
+            raise ToolError(
+                f"worker script not found at {str(WORKER)!r}; run the server with cwd at the "
+                "Ultima3D checkout root, or set ULTIMA3D_WORKER to its absolute path")
+        self._stderr_tail.clear()
         self.proc = subprocess.Popen(
             [BLENDER, "--background", "--factory-startup", "--python", str(WORKER)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, encoding="utf-8", bufsize=1,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
         )
         # Fresh queue per process so late lines from a dead worker never pollute.
         self._lines = queue.Queue()
@@ -90,8 +134,25 @@ class Worker:
                                         args=(self.proc, self._lines),
                                         daemon=True, name="ultima3d-reader")
         self._reader.start()
-        # worker prints a banner to stderr; first request confirms liveness
-        self.call("ping")
+        self._stderr_reader = threading.Thread(target=self._read_stderr,
+                                               args=(self.proc, self._stderr_tail),
+                                               daemon=True, name="ultima3d-stderr")
+        self._stderr_reader.start()
+        # worker prints a banner to stderr; first request confirms liveness, and
+        # it gets the short startup deadline rather than a full job's.
+        self._starting = True
+        try:
+            self.call("ping", timeout=START_TIMEOUT)
+        except ToolError as e:
+            self._kill()
+            detail = str(e)
+            # The died-path message already carries the stderr tail; only add it
+            # when the failure did not.
+            if "last stderr:" not in detail:
+                detail = f"{detail}\n{self._stderr_text()}"
+            raise ToolError(f"blender worker failed to start: {detail}") from None
+        finally:
+            self._starting = False
 
     @staticmethod
     def _read_loop(proc, lines):
@@ -100,6 +161,8 @@ class Worker:
         # EOF: the worker died; in-flight callers notice via the died check below.
 
     def ensure(self):
+        if self._starting:
+            return self  # _start's own handshake must not recurse into a restart
         if self.proc is None or self.proc.poll() is not None:
             self._start()
         return self
@@ -146,7 +209,10 @@ class Worker:
                 self._kill()
                 raise self._timeout_error(op, timeout)
             if self.proc.poll() is not None and self._lines.empty():
-                raise ToolError("blender worker died; check blender stderr")
+                code = self.proc.returncode
+                self._kill()
+                raise ToolError(
+                    f"blender worker died (exit code {code}); {self._stderr_text()}")
             try:
                 raw = self._lines.get(timeout=min(remaining, 5.0))
             except queue.Empty:

@@ -543,9 +543,17 @@ impl Ultima3d {
             "ULTIMA3D_BLENDER",
             r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe".to_string(),
         );
+        // Cwd is whatever directory the MCP client happened to be in, so the
+        // worker script is resolved from the executable first (see
+        // worker::resolve_worker_py) and only then from the cwd.
         let worker_py = env::var("ULTIMA3D_WORKER")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| cwd.join("blender").join("worker.py"));
+            .unwrap_or_else(|_| {
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(PathBuf::from));
+                worker::resolve_worker_py(exe_dir.as_deref(), &cwd)
+            });
         let timeout: u64 = env::var("ULTIMA3D_CALL_TIMEOUT")
             .ok()
             .and_then(|v| v.parse().ok())
