@@ -22,7 +22,7 @@ WORKER = os.path.join(os.path.dirname(__file__), "..", "blender", "worker.py")
 BUILDERS = ["box", "rounded_box", "cylinder", "tapered_cylinder", "sphere", "torus",
             "arch", "panel", "pipe", "curve", "extrusion", "lathe", "rock", "beam",
             "barrel", "crate", "roof", "window", "door", "stairs", "column", "wall",
-            "fence", "tree", "weapon_blade", "weapon_handle",
+            "fence", "tree", "weapon_blade", "weapon_handle", "text",
             "terrain", "scatter", "skydome"]
 
 # Builders whose geometry arguments have no usable default.

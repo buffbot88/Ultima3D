@@ -967,6 +967,56 @@ def build_skydome(name, radius=120, segments=32,
     return ob
 
 
+def build_text(name, text="POST OFFICE", size=0.3, depth=0.06, max_width=None,
+               location=(0, 0, 0), rotation=(0, 0, 0), **_):
+    """    Extruded 3D lettering from Blender's built-in font: export-safe signage
+    with no image textures. `size` is the cap height in units; `depth` the
+    extrusion; `max_width` uniformly shrinks the line to fit (for sign boards).
+    The lettering is baked upright facing +Y (toward a front/south viewer),
+    reading left-to-right, so recipes place it with identity rotation and
+    `location.y` at the board's front face (extrusion runs 0..depth toward +Y).
+    Geometry is recentered on X so placement is deterministic."""
+    if not text or not str(text).strip():
+        raise ValueError(f"text {name!r} needs a non-empty string")
+    cu = bpy.data.curves.new(name, "FONT")
+    cu.body = str(text)
+    cu.size = float(size)
+    try:
+        cu.align_x = "CENTER"
+    except (AttributeError, TypeError):
+        pass
+    cu.extrude = float(depth)
+    try:
+        cu.bevel_depth = 0.0
+    except (AttributeError, TypeError):
+        pass
+    ob = bpy.data.objects.new(name, cu)
+    bpy.context.scene.collection.objects.link(ob)
+    ob = _convert_to_mesh(ob)
+    xs = [v.co.x for v in ob.data.vertices]
+    if xs:
+        cx = (max(xs) + min(xs)) / 2
+        if abs(cx) > 1e-9:
+            for v in ob.data.vertices:
+                v.co.x -= cx
+    if max_width:
+        xs = [v.co.x for v in ob.data.vertices]
+        w = (max(xs) - min(xs)) if xs else 0.0
+        if w > float(max_width) > 0:
+            s = float(max_width) / w
+            for v in ob.data.vertices:
+                v.co.x *= s
+                v.co.y *= s
+                v.co.z *= s
+    # Stand the lettering up to face +Y, upright and reading left-to-right
+    # as seen by a front/south viewer: (x, y, z) -> (-x, z, y). A plain
+    # X-90 object rotation would leave it upside-down and reversed here.
+    for v in ob.data.vertices:
+        x, y, z = v.co.x, v.co.y, v.co.z
+        v.co.x, v.co.y, v.co.z = -x, z, y
+    return _place(ob, name, location, rotation)
+
+
 # Registry used by the recipe compiler
 BUILDERS = {
     "box": create_box, "rounded_box": create_rounded_box, "cylinder": create_cylinder,
@@ -975,8 +1025,9 @@ BUILDERS = {
     "extrusion": create_extrusion, "lathe": create_lathe, "rock": create_rock, "beam": create_beam,
     "barrel": build_barrel, "crate": build_crate, "roof": build_roof, "window": build_window,
     "door": build_door, "stairs": build_stairs, "column": build_column, "wall": build_wall,
-    "fence": build_fence, "tree": build_tree, "weapon_blade": build_weapon_blade,
+    "fence": build_fence, "tree": build_tree,    "weapon_blade": build_weapon_blade,
     "weapon_handle": build_weapon_handle,
+    "text": build_text,
     "terrain": build_terrain, "scatter": build_scatter, "skydome": build_skydome,
 }
 
@@ -1835,6 +1886,97 @@ def _bake_textures(ob, res, channels, out_dir, prefix=None):
     return out
 
 
+def _principled_of(mat):
+    """The Principled BSDF of a node material, or None."""
+    if mat is None or not mat.use_nodes:
+        return None
+    return mat.node_tree.nodes.get("Principled BSDF")
+
+
+def _load_bake_image(path, non_color):
+    img = bpy.data.images.load(path)
+    if non_color:
+        try:
+            img.colorspace_settings.name = "Non-Color"
+        except (AttributeError, TypeError):
+            pass
+    return img
+
+
+def _apply_baked_materials(ob, baked):
+    """Rebuild every material slot of a finalized copy around its baked PNGs.
+
+    Procedural node chains (wood grain, stone, ...) evaluate fine in Blender
+    but the glTF exporter cannot see through them: a linked Base Color socket
+    exports as default white. Pointing each slot at the just-baked albedo /
+    roughness / normal / metallic images makes the export match the render.
+    Emission and metallic scalars are carried over from the originals.
+    Copies are discarded after export, so scene originals keep live materials.
+    Returns the names of the export materials created.
+    """
+    if not isinstance(baked, dict) or "albedo" not in baked:
+        return []
+    wired = []
+    for slot in ob.material_slots:
+        src = slot.material
+        if src is None:
+            continue
+        bsdf = _principled_of(src)
+        mat = bpy.data.materials.new((src.name or "mat") + "_baked")
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        for n in list(nodes):
+            nodes.remove(n)
+        out = nodes.new("ShaderNodeOutputMaterial")
+        princ = nodes.new("ShaderNodeBsdfPrincipled")
+        links.new(princ.outputs.get("BSDF"), out.inputs.get("Surface"))
+        try:
+            alb = nodes.new("ShaderNodeTexImage")
+            alb.image = _load_bake_image(baked["albedo"], False)
+            links.new(alb.outputs.get("Color"), princ.inputs.get("Base Color"))
+        except (KeyError, RuntimeError):
+            pass
+        if "roughness" in baked:
+            try:
+                rgh = nodes.new("ShaderNodeTexImage")
+                rgh.image = _load_bake_image(baked["roughness"], True)
+                links.new(rgh.outputs.get("Color"), princ.inputs.get("Roughness"))
+            except (KeyError, RuntimeError):
+                pass
+        if "normal" in baked:
+            try:
+                nrm = nodes.new("ShaderNodeTexImage")
+                nrm.image = _load_bake_image(baked["normal"], True)
+                nmap = nodes.new("ShaderNodeNormalMap")
+                links.new(nrm.outputs.get("Color"), nmap.inputs.get("Color"))
+                links.new(nmap.outputs.get("Normal"), princ.inputs.get("Normal"))
+            except (KeyError, RuntimeError):
+                pass
+        if "metallic" in baked:
+            try:
+                met = nodes.new("ShaderNodeTexImage")
+                met.image = _load_bake_image(baked["metallic"], True)
+                links.new(met.outputs.get("Color"), princ.inputs.get("Metallic"))
+            except (KeyError, RuntimeError):
+                pass
+        elif bsdf is not None and "Metallic" in bsdf.inputs:
+            try:
+                princ.inputs["Metallic"].default_value = float(bsdf.inputs["Metallic"].default_value)
+            except (KeyError, TypeError, ValueError):
+                pass
+        if bsdf is not None:
+            for key in ("Emission Color", "Emission Strength"):
+                if key in bsdf.inputs and key in princ.inputs:
+                    try:
+                        princ.inputs[key].default_value = bsdf.inputs[key].default_value
+                    except (KeyError, TypeError):
+                        pass
+        slot.material = mat
+        wired.append(mat.name)
+    return wired
+
+
 def _export_glb(ob, path):
     bpy.ops.object.select_all(action="DESELECT")
     ob.select_set(True)
@@ -1899,11 +2041,24 @@ def op_finalize(params):
             _decimate(copies, "Decimate", max(0.05, budget / total))
 
         textures = {}
+        baked_by_copy = {}
         if params.get("bake", True):
             for ob in copies:
                 prefix = ob.name if len(obs) > 1 else name
-                for ch, p in _bake_textures(ob, resolution, channels, out_dir, prefix=prefix).items():
-                    textures[ch] = p
+                baked = {ch: p for ch, p in
+                         _bake_textures(ob, resolution, channels, out_dir, prefix=prefix).items()
+                         if ch in channels}
+                for ch, p in baked.items():
+                    textures[ch if len(obs) == 1 else f"{prefix}_{ch}"] = p
+                if baked:
+                    baked_by_copy[ob.name] = baked
+        # Point the export copies at their baked PNGs so the GLB matches the
+        # render: procedural chains alone export as white (see
+        # _apply_baked_materials). Scene originals are untouched.
+        exported_materials = []
+        for ob in copies:
+            if ob.name in baked_by_copy:
+                exported_materials.extend(_apply_baked_materials(ob, baked_by_copy[ob.name]))
 
         def _export_with_rig(path):
             bpy.ops.object.select_all(action="DESELECT")
@@ -1962,6 +2117,7 @@ def op_finalize(params):
         "materials": sorted({s.name for o in obs for s in o.data.materials if s}),
         "manifest": STATE["manifest"],
         "textures": textures,
+        "baked_materials": sorted(set(exported_materials)),
         "files": paths,
         "recipe": STATE["recipe"],
         "blueprint": STATE["blueprint"],
