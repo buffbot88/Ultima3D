@@ -127,6 +127,51 @@ def _set_principled(mat, base_color=None, roughness=None, metallic=None, emissio
     return mat
 
 
+def _srgb_to_linear(c):
+    """sRGB display value (0..1) -> Blender scene-linear."""
+    c = float(c)
+    if c <= 0.04045:
+        return c / 12.92
+    return ((c + 0.055) / 1.055) ** 2.4
+
+
+def material_color(mat_spec, default=None):
+    """Resolve a material spec to Blender-linear RGB.
+
+    `color` keeps its historical meaning: the numbers are linear Base Color
+    values, passed through untouched. `color_srgb` is new and takes display
+    sRGB values -- either 0..1 floats or 0..255 ints -- and converts them, so
+    recipes can carry the numbers an artist reads off a colour picker.
+    Setting both is ambiguous and is rejected rather than guessed at.
+    """
+    if not isinstance(mat_spec, dict):
+        return default
+    lin = mat_spec.get("color")
+    srgb = mat_spec.get("color_srgb")
+    if lin is not None and srgb is not None:
+        raise ValueError(
+            f"material {mat_spec.get('name')!r}: set `color` (linear) or "
+            f"`color_srgb` (display sRGB), not both")
+    if srgb is None:
+        return lin if lin is not None else default
+    if not isinstance(srgb, (list, tuple)) or len(srgb) != 3:
+        raise ValueError(f"material {mat_spec.get('name')!r}: color_srgb needs 3 numbers")
+    try:
+        vals = [float(c) for c in srgb]
+    except (TypeError, ValueError):
+        raise ValueError(f"material {mat_spec.get('name')!r}: color_srgb must be numeric")
+    # One scale for the whole triple: mixing 0..1 and 0..255 in one colour is a bug.
+    scale = 255.0 if max(vals) > 1.0 else 1.0
+    out = []
+    for v in vals:
+        if v < 0 or v > scale:
+            raise ValueError(
+                f"material {mat_spec.get('name')!r}: color_srgb {srgb} out of range "
+                f"(expected 0..1 or 0..255)")
+        out.append(_srgb_to_linear(v / scale))
+    return out
+
+
 def _simple_mat(name, base_color, roughness=0.6, metallic=0.0, texture=None,
                 tex_scale=3.0, tex_blend=0.5, tex_seed=0):
     """Flat PBR, or a procedural preset when texture names one."""
@@ -387,14 +432,15 @@ def _register_node(manifest, node, before, mat_spec):
     created = sorted(_asset_meshes_names() - before)
     manifest["objects"][node] = created
     if mat_spec and created:
+        base = material_color(mat_spec)
         for name in created:
             ob = _obj_by_name(name)
             _ensure_material(ob, mat_spec["name"])
-            _set_principled(ob.data.materials[0], mat_spec.get("color"), mat_spec.get("roughness"),
+            _set_principled(ob.data.materials[0], base, mat_spec.get("roughness"),
                             mat_spec.get("metallic"), mat_spec.get("emission"))
             if mat_spec.get("texture"):
                 _apply_procedural(ob.data.materials[0], mat_spec["texture"],
-                                  mat_spec.get("color", (0.6, 0.6, 0.6)),
+                                  base or (0.6, 0.6, 0.6),
                                   mat_spec.get("tex_scale", 3.0),
                                   mat_spec.get("tex_blend", 0.5),
                                   mat_spec.get("tex_seed", 0))
@@ -1017,6 +1063,504 @@ def build_text(name, text="POST OFFICE", size=0.3, depth=0.06, max_width=None,
     return _place(ob, name, location, rotation)
 
 
+# --------------------------------------------------------------------------
+# Foliage canopy: surface-attached leaves on irregular overlapping clusters.
+# Design: docs/foliage-cluster-builder-spec.md. The builder owns the cluster
+# displacement field, so every leaf is placed against the surface the core
+# actually has -- which is what stops the "floating card" failure of hand-
+# placed recipe leaves.
+# --------------------------------------------------------------------------
+
+_FOLIAGE_DEFAULT_PALETTE = [
+    {"name": "leaf_deep", "color_srgb": [41, 82, 36], "roughness": 0.92, "weight": 0.35},
+    {"name": "leaf_mid", "color_srgb": [64, 122, 51], "roughness": 0.90, "weight": 0.40},
+    {"name": "leaf_warm", "color_srgb": [97, 148, 61], "roughness": 0.88, "weight": 0.18},
+    {"name": "leaf_gold", "color_srgb": [133, 173, 76], "roughness": 0.85, "weight": 0.07},
+]
+
+# Leaf silhouette in card-local space: x = width (-0.5..0.5), y = 0 at base..1 at tip.
+# The base root sits at -0.18 so a leaf can be buried inside the cluster surface.
+_LEAF_PROFILE = ((0.0, -0.18), (0.30, -0.10), (0.50, 0.10), (0.34, 0.55),
+                 (0.0, 1.0), (-0.34, 0.55), (-0.50, 0.10), (-0.30, -0.10))
+
+
+def _smoothstep(t):
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _noise3(x, y, z, seed):
+    """Trilinear value noise in [-1, 1], from the shared hash lattice."""
+    xi, yi, zi = math.floor(x), math.floor(y), math.floor(z)
+    u, v, w = _smoothstep(x - xi), _smoothstep(y - yi), _smoothstep(z - zi)
+
+    def h(dx, dy, dz):
+        return _hash01(xi + dx + (yi + dy) * 57 + (zi + dz) * 131,
+                       (zi + dz) * 73 + (yi + dy) * 11 + dx * 5, seed)
+
+    c00 = h(0, 0, 0) * (1 - u) + h(1, 0, 0) * u
+    c10 = h(0, 1, 0) * (1 - u) + h(1, 1, 0) * u
+    c01 = h(0, 0, 1) * (1 - u) + h(1, 0, 1) * u
+    c11 = h(0, 1, 1) * (1 - u) + h(1, 1, 1) * u
+    lo = c00 * (1 - v) + c10 * v
+    hi = c01 * (1 - v) + c11 * v
+    return (lo * (1 - w) + hi * w) * 2.0 - 1.0
+
+
+def _foliage_sectors(seed):
+    """Per-octant radial bias: the term that makes a canopy asymmetric."""
+    return [0.85 + 0.30 * _hash01(i * 37 + 5, 11, int(seed)) for i in range(8)]
+
+
+def _foliage_surface(dirv, seed, jitter, scale, sectors):
+    """Radial multiplier at a unit direction: one coherent field per canopy."""
+    n = (0.65 * _noise3(dirv.x * scale, dirv.y * scale, dirv.z * scale, seed)
+         + 0.35 * _noise3(dirv.x * scale * 2.3 + 11.7, dirv.y * scale * 2.3 + 3.1,
+                          dirv.z * scale * 2.3 + 7.9, seed + 101))
+    ang = math.atan2(dirv.y, dirv.x)
+    return 1.0 + jitter * n * sectors[int((ang + math.pi) / (math.pi / 4.0)) % 8]
+
+
+def _patch_rect(i, count):
+    """UV patch for palette entry i inside one shared atlas."""
+    cols = 2 if count <= 4 else 3
+    rows = max(1, int(math.ceil(count / float(cols))))
+    c, r = i % cols, i // cols
+    inset = 0.02
+    return (c / cols + inset, r / rows + inset, (c + 1) / cols - inset, (r + 1) / rows - inset)
+
+
+def _add_leaf(bm, uv_layer, base, dirv, side, length, width, thickness, curl,
+              uv_rect, mat_index):
+    """One solidified leaf card, base buried at `base`, growing along `dirv`."""
+    nrm = dirv.cross(side)
+    if nrm.length < 1e-6:
+        side = Vector((0.0, 0.0, 1.0)) if abs(dirv.z) < 0.9 else Vector((1.0, 0.0, 0.0))
+        nrm = dirv.cross(side)
+    nrm.normalize()
+
+    def at(x, y, z):
+        bend = curl * (y * y) * 0.55 - curl * 0.30 * (x * x)
+        return (base + side * (x * width) + dirv * (y * length)
+                + nrm * (bend * length + z * thickness))
+
+    if thickness <= 1e-6:
+        # Flat card: 6 tris instead of 28. Real foliage is single-sided, and the
+        # budget saved here buys 3-4x more leaves, which is what the eye reads.
+        # The material keeps backface culling off, so glTF exports it doubleSided.
+        faces = [bm.faces.new([bm.verts.new(at(x, y, 0.0)) for x, y in _LEAF_PROFILE])]
+    else:
+        front = [bm.verts.new(at(x, y, 0.5)) for x, y in _LEAF_PROFILE]
+        back = [bm.verts.new(at(x, y, -0.5)) for x, y in _LEAF_PROFILE]
+        faces = [bm.faces.new(list(reversed(front))), bm.faces.new(back)]
+        for i in range(len(front)):
+            j = (i + 1) % len(front)
+            faces.append(bm.faces.new((front[i], front[j], back[j], back[i])))
+    umin, vmin, umax, vmax = uv_rect
+    for f in faces:
+        f.material_index = mat_index
+        f.smooth = False
+        for loop in f.loops:
+            v = loop.vert.co - base
+            x = v.dot(side) / max(width, 1e-6)
+            y = v.dot(dirv) / max(length, 1e-6)
+            loop[uv_layer].uv = (umin + min(max(x + 0.5, 0.0), 1.0) * (umax - umin),
+                                 vmin + min(max((y + 0.18) / 1.18, 0.0), 1.0) * (vmax - vmin))
+
+
+def _foliage_materials(palette):
+    """Material per palette entry; colours resolved through the shared contract."""
+    mats = []
+    for entry in palette:
+        linear = material_color(entry, (0.2, 0.35, 0.18))
+        mat = _simple_mat(entry["name"], linear, entry.get("roughness", 0.9))
+        mats.append((mat, _patch_rect(len(mats), len(palette)), entry))
+    return mats
+
+
+def build_foliage_cluster(name, center=(0.0, 0.0, 4.2), radii=(2.6, 2.4, 2.0), seed=1,
+                          layers=3, cluster_count=12, cluster_size=(0.55, 1.0),
+                          overlap=0.88, silhouette_jitter=0.35, noise_scale=1.6,
+                          openness=0.35, leaf=None, palette=None, skirt=None,
+                          branch_tips=None, trunk_top=None, subdiv=1, **_):
+    """Irregular canopy of overlapping clusters with surface-attached leaf cards.
+
+    One object out: cores, leaves and branch cuffs are joined here so
+    render_asset frames the whole canopy and the recipe stays one node.
+    """
+    leaf = dict(leaf or {})
+    pal = list(palette or _FOLIAGE_DEFAULT_PALETTE)
+    if not pal:
+        raise ValueError(f"foliage_cluster {name!r}: palette needs at least one entry")
+    seed = int(seed)
+    cx, cy, cz = (float(v) for v in center)
+    rx, ry, rz = (float(v) for v in radii)
+    mean_r = (rx + ry + rz) / 3.0
+    sectors = _foliage_sectors(seed)
+    jitter = float(silhouette_jitter)
+    scale = float(noise_scale)
+
+    per_cluster = int(leaf.get("count_per_cluster", 3))   # rosettes per cluster
+    per_rosette = max(1, int(leaf.get("leaves_per_rosette", 5)))
+    length = float(leaf.get("length", 0.22))
+    width = float(leaf.get("width", 0.13))
+    thick = float(leaf.get("thickness", 0.012))
+    curl = float(leaf.get("curl", 0.35))
+    inset = float(leaf.get("inset", 0.25))
+
+    mats = _foliage_materials(pal)
+    deepest = 0
+
+    # ---- 1. cluster placement: jittered golden-angle spiral ----------------
+    n = max(1, int(cluster_count))
+    rng = random.Random(seed * 7919 + 13)
+    placed = []
+    for i in range(n):
+        t = (i + 0.5) / n
+        polar = math.acos(max(-1.0, min(1.0, 1.0 - 2.0 * t)))
+        az = i * 2.399963229728653 + rng.uniform(-0.25, 0.25)
+        d = Vector((math.sin(polar) * math.cos(az), math.sin(polar) * math.sin(az),
+                    math.cos(polar)))
+        layer = 0 if d.z < -0.22 else (2 if d.z > 0.34 else 1)
+        # Spread through the volume, not just the shell: a hollow shell of small
+        # cores reads as a ring of blobs with gaps, which is exactly the failure
+        # mode this builder exists to avoid.
+        radial = (0.45, 0.72, 0.95)[layer] if layers > 1 else 1.0
+        surf = _foliage_surface(d, seed, jitter, scale, sectors)
+        c = Vector((cx, cy, cz)) + d * (mean_r * surf * radial)
+        size = mean_r * (float(cluster_size[0]) if len(cluster_size) < 2 else
+                         rng.uniform(float(cluster_size[0]), float(cluster_size[1]))) * 0.62
+        placed.append({"c": c, "d": d, "r": size, "layer": layer})
+
+    # Adjacency: grow radii until neighbours overlap, so the silhouette is one
+    # mass instead of N blobs. Orphans that cannot reach anyone are re-seeded.
+    cap = float(cluster_size[1] if len(cluster_size) > 1 else cluster_size[0]) * mean_r * 0.62 * 1.30
+    for _ in range(14):
+        changed = False
+        for i, a in enumerate(placed):
+            best = None
+            for j, b in enumerate(placed):
+                if i == j:
+                    continue
+                gap = (a["c"] - b["c"]).length - (a["r"] + b["r"]) * float(overlap)
+                if best is None or gap < best:
+                    best = gap
+            if best is not None and best > 0:
+                # Grow toward overlap but cap the growth: uncapped, a sparse
+                # placement balloons each core into a giant bubble that dwarfs
+                # the leaves and the tree.
+                a["r"] = min(a["r"] * 1.12, cap)
+                changed = True
+        if not changed:
+            break
+
+    # ---- 2. cores ---------------------------------------------------------
+    parts = []
+    for idx, cl in enumerate(placed):
+        bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=max(0, int(subdiv)), radius=1.0)
+        ob = bpy.context.active_object
+        for v in ob.data.vertices:
+            d = v.co.normalized()
+            local = _noise3(d.x * 3.1 + idx, d.y * 3.1 + idx * 0.5, d.z * 3.1, seed + 71) * 0.18
+            v.co = d * (1.0 + local)
+        ob.scale = (cl["r"] * 0.95, cl["r"] * 0.95, cl["r"] * 0.78)
+        ob.location = cl["c"]
+        for p in ob.data.polygons:
+            p.use_smooth = True
+        mat_index = 0 if cl["layer"] == 0 else min(1, len(mats) - 1) if len(mats) > 1 else 0
+        ob.data.materials.append(mats[mat_index][0])
+        parts.append(ob)
+
+    # ---- 3. leaves on each cluster's outward surface ----------------------
+    bms = {}
+    uv_layers = {}
+    for i in range(len(mats)):
+        bm = bmesh.new()
+        bms[i] = bm
+        uv_layers[i] = bm.loops.layers.uv.new("UVMap")
+
+    floats = []
+    total_leaves = 0
+    for idx, cl in enumerate(placed):
+        d0 = cl["d"]
+        up = Vector((0.0, 0.0, 1.0))
+        t1 = d0.cross(up)
+        if t1.length < 1e-4:
+            t1 = Vector((1.0, 0.0, 0.0))
+        t1.normalize()
+        t2 = d0.cross(t1)
+        # Flat count per cluster: a fixed, predictable triangle cost per node.
+        count = max(1, int(per_cluster))
+        for k in range(count):
+            a = k * 2.399963229728653 + rng.uniform(-0.3, 0.3)
+            tilt = 0.35 + 0.5 * rng.random()
+            rdir = (t1 * math.cos(a) + t2 * math.sin(a)) * math.sin(tilt) + d0 * math.cos(tilt)
+            if rdir.length < 1e-5:
+                continue
+            rdir.normalize()
+            # Attachment point comes from the same field the core was displaced
+            # with, so it lies on the core surface rather than on an ideal sphere.
+            local = _noise3(rdir.x * 3.1 + idx, rdir.y * 3.1 + idx * 0.5, rdir.z * 3.1,
+                            seed + 71) * 0.18
+            surf = cl["r"] * (1.0 + local)
+            point = cl["c"] + rdir * surf
+            side = rdir.cross(t1)
+            if side.length < 1e-4:
+                side = t1
+            side.normalize()
+            at_axis = rdir.cross(side).normalized()
+            # palette: skirt darker, crown gold; deepest entries first
+            if cl["layer"] == 0:
+                mi = 0
+            elif cl["layer"] == 2:
+                mi = len(mats) - 1 if rng.random() < 0.45 else max(0, len(mats) - 2)
+            else:
+                mi = min(len(mats) - 1, 1 + (1 if rng.random() < 0.3 else 0))
+            # A rosette: several leaves fanned around the patch normal. The base
+            # stays on the cluster surface, so leaves overlap each other rather
+            # than sitting apart as isolated cards.
+            for pidx in range(per_rosette):
+                spin = (pidx * (2.0 * math.pi / per_rosette)) + rng.uniform(-0.25, 0.25)
+                s2 = side * math.cos(spin) + at_axis * math.sin(spin)
+                splay = 0.35 + 0.45 * rng.random()
+                ldir = (rdir * math.cos(splay) + s2 * math.sin(splay)).normalized()
+                lscale = 0.7 + 0.65 * rng.random()
+                base = point - ldir * (inset * length * lscale)
+                floats.append(0.0)  # buried by construction; validate tripwire
+                _add_leaf(bms[mi], uv_layers[mi], base, ldir, s2, length * lscale,
+                          width * (0.85 + 0.3 * rng.random()), thick, curl,
+                          mats[mi][1], 0)
+                total_leaves += 1
+
+    # ---- 4. drooping skirt chains at the rim ------------------------------
+    sk = dict(skirt or {})
+    if sk.get("enabled"):
+        chains = int(sk.get("count", 5))
+        chain_len = int(sk.get("leaves", 4))
+        rim = [cl for cl in placed if cl["layer"] == 0]
+        for ci in range(min(chains, len(rim))):
+            cl = rim[ci]
+            d = (cl["c"] - Vector((cx, cy, cz)))
+            if d.length < 1e-4:
+                continue
+            d.z = 0.0
+            d.normalize()
+            start = cl["c"] + d * cl["r"] * 0.9
+            for j in range(chain_len):
+                base = start + Vector((0.0, 0.0, -0.13 * j))
+                down = Vector((rng.uniform(-0.25, 0.25), rng.uniform(-0.25, 0.25), -1.0)).normalized()
+                side = down.cross(Vector((0.0, 0.0, 1.0)))
+                if side.length < 1e-4:
+                    side = Vector((1.0, 0.0, 0.0))
+                side.normalize()
+                _add_leaf(bms[0], uv_layers[0], base, down, side, length * 1.15, width,
+                          thick, curl * 1.6, mats[0][1], 0)
+                total_leaves += 1
+
+    # ---- 5. branch cuffs at authored tips ---------------------------------
+    tips = [Vector(t) for t in (branch_tips or [])]
+    if tips and trunk_top:
+        top = Vector(trunk_top)
+        for i, tip in enumerate(tips):
+            d = tip - top
+            if d.length < 1e-4:
+                continue
+            d.normalize()
+            bpy.ops.mesh.primitive_cone_add(vertices=10, radius1=0.085, radius2=0.12, depth=0.30)
+            cuff = bpy.context.active_object
+            cuff.location = tip - d * 0.16
+            cuff.rotation_euler = d.to_track_quat("Z", "Y").to_euler()
+            for p in cuff.data.polygons:
+                p.use_smooth = True
+            cuff.data.materials.append(bpy.data.materials.get("bark"))
+            parts.append(cuff)
+
+    for i, bm in bms.items():
+        if not bm.verts:
+            bm.free()
+            continue
+        mesh = bpy.data.meshes.new(f"{name}_leaves_{i}")
+        bm.to_mesh(mesh)
+        bm.free()
+        ob = bpy.data.objects.new(f"{name}_leaves_{i}", mesh)
+        bpy.context.scene.collection.objects.link(ob)
+        ob.data.materials.append(mats[i][0])
+        parts.append(ob)
+
+    # ---- 6. one object out -----------------------------------------------
+    bpy.ops.object.select_all(action="DESELECT")
+    for ob in parts:
+        ob.select_set(True)
+    bpy.context.view_layer.objects.active = parts[0]
+    bpy.ops.object.join()
+    canopy = bpy.context.active_object
+    canopy.name = name
+    # Apply LOCATION too: join() keeps parts[0]'s own offset, so zeroing the
+    # object location without baking it first shifts the whole canopy down by
+    # that offset (it landed at the trunk base in the first v3 build).
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    _place(canopy, name)
+
+    STATE.setdefault("foliage", []).append({
+        "node": name,
+        "clusters": len(placed),
+        "leaves": total_leaves,
+        "leaf_float_max": max(floats) if floats else 0.0,
+        "palette": [e["name"] for e in pal],
+    })
+    return canopy
+
+
+_KERB_DEFAULT_PALETTE = [
+    {"name": "kerb_stone", "color_srgb": [186, 176, 154], "roughness": 0.95, "texture": "stone"},
+    {"name": "kerb_stone_light", "color_srgb": [210, 200, 178], "roughness": 0.9, "texture": "stone"},
+]
+
+
+def _arc_holes(spans):
+    """Uncovered arcs of a (a0, a1) block-span list, wrap seam included."""
+    if len(spans) < 2:
+        return []
+    spans = sorted(spans)
+    holes = [b0 - a1 for (_a0, a1), (b0, _b1) in zip(spans, spans[1:]) if b0 > a1]
+    seam = (spans[0][0] + 2.0 * math.pi) - spans[-1][1]
+    if seam > 0:
+        holes.append(seam)
+    return holes
+
+
+def _kerb_block(bm, uv_layer, cx, cy, a0, a1, r_mid, thick, z0, z1, chamfer, mat_index):
+    """One annular-sector stone, chamfered on top, as a closed 6-quad solid."""
+    r_in, r_out = r_mid - thick / 2.0, r_mid + thick / 2.0
+    inset = min(chamfer, thick * 0.25)
+
+    def at(a, r, z):
+        return bm.verts.new((cx + r * math.cos(a), cy + r * math.sin(a), z))
+
+    b0, b1 = at(a0, r_in, z0), at(a0, r_out, z0)
+    b2, b3 = at(a1, r_out, z0), at(a1, r_in, z0)
+    t0, t1 = at(a0, r_in + inset, z1), at(a0, r_out - inset, z1)
+    t2, t3 = at(a1, r_out - inset, z1), at(a1, r_in + inset, z1)
+    faces = [
+        (b0, b3, b2, b1),   # underside, -Z
+        (t0, t1, t2, t3),   # worn top face, +Z
+        (b1, b2, t2, t1),   # outer face, +radial
+        (b3, b0, t0, t3),   # inner face, -radial (retains the bed soil)
+        (b0, b1, t1, t0),   # start end
+        (b2, b3, t3, t2),   # finish end
+    ]
+    for corners in faces:
+        f = bm.faces.new(corners)
+        f.material_index = mat_index
+        f.smooth = False
+        f.normal_update()
+
+
+def build_stone_kerb(name, radius=3.0, thickness=0.22, height=0.3, segments=34,
+                     center=(0.0, 0.0), seed=1, gaps=0, gap_deg=20.0, cap=True,
+                     cap_height=0.07, cap_overhang=0.035, chamfer=0.02, jitter=0.05,
+                     palette=None, **_):
+    """Raised masonry kerb ring: a block base course plus an overhanging cap course.
+
+    `radius` is the kerb centreline, so the footprint is radius + thickness/2 +
+    cap_overhang. Blocks are laid with a hairline joint (no shared vertices, or
+    validate counts them as doubles) and a per-block size/radius jitter, so the
+    ring reads as hand-laid stone instead of an extruded donut. `gaps` punches
+    evenly spaced planting gaps of `gap_deg` for path throats.
+
+    One object out, two material slots (base stone, cap stone).
+    """
+    pal = list(palette or _KERB_DEFAULT_PALETTE)
+    if not pal:
+        raise ValueError(f"stone_kerb {name!r}: palette needs at least one entry")
+    seed = int(seed)
+    rng = random.Random(seed * 6151 + 7)
+    cx, cy = (float(v) for v in center)
+    r_mid = float(radius)
+    thick = float(thickness)
+    top = float(height)
+    n = max(8, int(segments))
+    cap_h = float(cap_height) if cap else 0.0
+    if cap_h >= top:
+        raise ValueError(f"stone_kerb {name!r}: cap_height {cap_h} must be under height {top}")
+    gap_n = max(0, int(gaps))
+    gap_half = math.radians(float(gap_deg)) / 2.0
+    # Gaps sit on the diagonals by default: the cardinal throats stay closed
+    # unless a caller asks for a gap on one.
+    gap_centres = [(-3.0 * math.pi / 4.0 + i * (2.0 * math.pi / max(1, gap_n)))
+                   if gap_n else 0.0 for i in range(gap_n)]
+
+    step = 2.0 * math.pi / n
+    joint = step * 0.06  # hairline joint, in radians
+    courses = [(0.0, top - cap_h, thick, 0.0, 0)]
+    if cap:
+        courses.append((top - cap_h, top, thick + 2.0 * cap_overhang, step * 0.5, 1))
+
+    mats = []
+    for i in range(2):
+        entry = pal[min(i, len(pal) - 1)]
+        mats.append(_simple_mat(entry["name"],
+                                material_color(entry, (0.72, 0.69, 0.6)),
+                                entry.get("roughness", 0.93),
+                                texture=entry.get("texture"),
+                                tex_scale=entry.get("tex_scale", 3.0),
+                                tex_seed=seed))
+
+    bm = bmesh.new()
+    uv_layer = bm.loops.layers.uv.new("UVMap")
+    blocks = 0
+    course_spans = []  # one (a0, a1) list per course, for the continuity check
+    max_top = 0.0
+    for z0, z1, c_thick, offset, mat_index in courses:
+        spans = []
+        for i in range(n):
+            a0 = offset + i * step
+            a1 = a0 + step
+            if gap_n and any(abs(((a0 + step / 2.0) - g + math.pi) % (2.0 * math.pi) - math.pi)
+                             < gap_half for g in gap_centres):
+                continue
+            aa0, aa1 = a0 + joint / 2.0, a1 - joint / 2.0
+            dr = r_mid * (1.0 + rng.uniform(-jitter, jitter) * 0.25)
+            dt = c_thick * (1.0 + rng.uniform(-jitter, jitter))
+            zt = z1 + rng.uniform(-0.4, 0.4) * 0.012 if mat_index == 1 else z1
+            _kerb_block(bm, uv_layer, cx, cy, aa0, aa1, dr, dt, z0, zt, chamfer, mat_index)
+            spans.append((aa0, aa1))
+            blocks += 1
+            max_top = max(max_top, zt)
+        course_spans.append(spans)
+
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    ob = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(ob)
+    for mat in mats:
+        ob.data.materials.append(mat)
+    _place(ob, name)
+
+    # Largest uncovered arc, judged course by course: one course can hide the
+    # other's holes (the capped course is offset half a block), so a per-course
+    # number is the honest tripwire for a bed boundary that has to close.
+    holes = [h for spans in course_spans for h in _arc_holes(spans)]
+    laid = min((sum(a1 - a0 for a0, a1 in spans) for spans in course_spans),
+               default=0.0)
+    STATE.setdefault("kerb", []).append({
+        "node": name,
+        "radius": r_mid,
+        "thickness": thick,
+        "height": max_top,
+        "segments": n,
+        "gaps": gap_n,
+        "gap_deg": float(gap_deg),
+        "blocks": blocks,
+        "outer_radius": r_mid + thick / 2.0 + (float(cap_overhang) if cap else 0.0),
+        "inner_radius": r_mid - thick / 2.0 - (float(cap_overhang) if cap else 0.0),
+        "courses": len(courses),
+        "hole_max_deg": math.degrees(max(holes)) if holes else 0.0,
+        "coverage_deg": math.degrees(laid),
+    })
+    return ob
+
+
 # Registry used by the recipe compiler
 BUILDERS = {
     "box": create_box, "rounded_box": create_rounded_box, "cylinder": create_cylinder,
@@ -1025,7 +1569,9 @@ BUILDERS = {
     "extrusion": create_extrusion, "lathe": create_lathe, "rock": create_rock, "beam": create_beam,
     "barrel": build_barrel, "crate": build_crate, "roof": build_roof, "window": build_window,
     "door": build_door, "stairs": build_stairs, "column": build_column, "wall": build_wall,
-    "fence": build_fence, "tree": build_tree,    "weapon_blade": build_weapon_blade,
+    "fence": build_fence, "tree": build_tree, "foliage_cluster": build_foliage_cluster,
+    "stone_kerb": build_stone_kerb,
+    "weapon_blade": build_weapon_blade,
     "weapon_handle": build_weapon_handle,
     "text": build_text,
     "terrain": build_terrain, "scatter": build_scatter, "skydome": build_skydome,
@@ -1049,6 +1595,8 @@ def op_build(params):
     # spec and earlier nodes' outputs) resolve against the recipe being built.
     STATE["recipe"] = recipe
     STATE["manifest"] = manifest
+    STATE["foliage"] = []
+    STATE["kerb"] = []
     node_tris = {}
     ignored_params = {}
     for node_name, spec in recipe.items():
@@ -1128,7 +1676,7 @@ def op_set_material(params):
                else _asset_meshes())
     if not targets:
         raise ValueError("nothing to material")
-    mat = _simple_mat(params["name"], params.get("color", (0.6, 0.6, 0.6)),
+    mat = _simple_mat(params["name"], material_color(params, (0.6, 0.6, 0.6)),
                       params.get("roughness", 0.6), params.get("metallic", 0.0),
                       params.get("texture"), params.get("tex_scale", 3.0),
                       params.get("tex_blend", 0.5), params.get("tex_seed", 0))
@@ -1300,8 +1848,40 @@ def op_validate(params):
     check("non_manifold_edges", nonmanifold == 0 or params.get("allow_non_manifold", True),
           f"{nonmanifold} non-manifold edges (ok for stylized hard-surface)")
 
+    # Foliage-specific checks, only when a canopy was built this session.
+    for rec in STATE.get("foliage") or []:
+        float_gap = float(rec.get("leaf_float_max", 0.0))
+        check(f"foliage_leaf_contact[{rec['node']}]", float_gap <= 0.02,
+              f"{float_gap:.3f} max leaf-base gap ({rec.get('leaves')} leaves)")
+        # Silhouette irregularity: radial spread of the canopy in 8 yaw sectors.
+        # A sphere or a ring of equal blobs scores low; an organic canopy does not.
+        pts = [o.matrix_world @ v.co for o in obs for v in o.data.vertices]
+        if pts:
+            cxx = sum(p.x for p in pts) / len(pts)
+            cyy = sum(p.y for p in pts) / len(pts)
+            radii = [0.0] * 8
+            for p in pts:
+                ang = math.atan2(p.y - cyy, p.x - cxx)
+                k = int((ang + math.pi) / (math.pi / 4.0)) % 8
+                d = math.hypot(p.x - cxx, p.y - cyy)
+                radii[k] = max(radii[k], d)
+            mean = sum(radii) / 8.0 or 1e-6
+            spread = (sum((r - mean) ** 2 for r in radii) / 8.0) ** 0.5 / mean
+            check(f"foliage_silhouette[{rec['node']}]", spread >= 0.05,
+                  f"{spread:.3f} radial spread across 8 sectors (>= 0.05)")
+
+    # Kerb-specific check: a raised bed boundary has to close. The joint is a
+    # hairline, so anything wider than 2 degrees means a block never got laid.
+    for rec in STATE.get("kerb") or []:
+        allowed = (rec.get("gap_deg", 0.0) + 2.0) if rec.get("gaps") else 2.0
+        check(f"kerb_continuity[{rec['node']}]", rec.get("hole_max_deg", 0.0) <= allowed,
+              f"{rec.get('hole_max_deg', 0.0):.2f} deg largest hole across "
+              f"{rec.get('courses')} course(s) / {rec.get('blocks')} blocks, "
+              f"{rec.get('coverage_deg', 0.0):.1f} deg laid per course")
+
     return {"pass": ok, "checks": checks, "triangles": tris, "budget": budget,
-            "object_count": len(obs)}
+            "object_count": len(obs),
+            "foliage": STATE.get("foliage") or []}
 
 
 # ---- blueprint: compile the v1 contract to recipe nodes, check assertions ---
@@ -1977,6 +2557,45 @@ def _apply_baked_materials(ob, baked):
     return wired
 
 
+def _merge_identical_materials(ob):
+    """Collapse material slots that sample the same baked texture set.
+
+    After baking, every slot's colour, roughness and normal live in one shared
+    atlas at its own UV region, so slots pointing at the same images render
+    identically. Merging them removes glTF primitives (one draw call per
+    material slot) without losing a single texel of variation.
+    """
+    if not ob.material_slots:
+        return 0
+    key_to_index = {}
+    keep = []
+    remap = {}
+    for i, slot in enumerate(ob.material_slots):
+        mat = slot.material
+        if mat is None or not mat.use_nodes:
+            remap[i] = len(keep)
+            keep.append(mat)
+            continue
+        paths = tuple(sorted(n.image.filepath for n in mat.node_tree.nodes
+                             if n.type == "TEX_IMAGE" and n.image is not None))
+        if not paths:
+            remap[i] = len(keep)
+            keep.append(mat)
+            continue
+        if paths not in key_to_index:
+            key_to_index[paths] = len(keep)
+            keep.append(mat)
+        remap[i] = key_to_index[paths]
+    if len(keep) == len(ob.material_slots):
+        return 0
+    for poly in ob.data.polygons:
+        poly.material_index = remap.get(poly.material_index, poly.material_index)
+    ob.data.materials.clear()
+    for mat in keep:
+        ob.data.materials.append(mat)
+    return len(ob.material_slots) and (len(remap) - len(keep))
+
+
 def _export_glb(ob, path):
     bpy.ops.object.select_all(action="DESELECT")
     ob.select_set(True)
@@ -2059,6 +2678,15 @@ def op_finalize(params):
         for ob in copies:
             if ob.name in baked_by_copy:
                 exported_materials.extend(_apply_baked_materials(ob, baked_by_copy[ob.name]))
+        # Default on: after baking, every slot samples the same atlas images and a
+        # material only contributes a glTF primitive (draw call). Merging is
+        # pixel-identical because each region's colour and roughness are baked
+        # into its own UV patch. Pass merge_materials=false to keep slots apart.
+        merged_slots = 0
+        if params.get("merge_materials", True):
+            for ob in copies:
+                if ob.name in baked_by_copy:
+                    merged_slots += _merge_identical_materials(ob)
 
         def _export_with_rig(path):
             bpy.ops.object.select_all(action="DESELECT")

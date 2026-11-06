@@ -4,7 +4,7 @@ description: Builds, renders, inspects, refines, validates and exports game-read
 license: MIT
 compatibility: Requires this repo on the user's own machine, Blender 5.2 installed, and Python 3.10+ with mcp and httpx. Serves 127.0.0.1 only; cannot run in a cloud workspace.
 metadata:
-  version: "8"
+  version: "9"
 ---
 
 # Ultima3D — agentic 3D asset work on this machine

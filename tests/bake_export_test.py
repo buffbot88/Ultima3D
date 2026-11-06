@@ -83,7 +83,8 @@ check("validate succeeds", "error" not in validated, str(validated)[:120])
 final = call("finalize", {"name": "bake_probe", "triangle_budget": 8000,
                           "texture_resolution": 128, "lods": None,
                           "channels": ["albedo", "normal", "roughness"],
-                          "dir": out_dir})
+                          "merge_materials": False,  # keep slots apart: this test
+                          "dir": out_dir})  # proves the lettering survives export
 check("finalize succeeds", "error" not in final, str(final)[:200])
 check("baked materials wired", bool(final.get("baked_materials")),
       str(final.get("baked_materials")))
