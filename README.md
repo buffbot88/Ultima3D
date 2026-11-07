@@ -32,6 +32,10 @@ resolution; finalize exports baked PBR textures instead of white
 procedurals (verified by bake_export_test) with an opt-out material merge;
 new text signage builder; new foliage_cluster and stone_kerb builders with a
 foliage spec and colour diagnostic under docs/.
+v10 (this tree) — five new builders for the Clover Village set: flower_bed
+(domed soil, clover, rosettes, colour-grouped blooms), courier_statue (seated
+rabbit-courier focal piece), bench, lantern_post, and the stone_kerb ring
+builder; SKILL.md documents all 36 builders.
 
 ```text
 LLM (MCP client — or a Freebuff skill driving the loopback daemon)

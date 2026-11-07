@@ -1561,6 +1561,850 @@ def build_stone_kerb(name, radius=3.0, thickness=0.22, height=0.3, segments=34,
     return ob
 
 
+_FLOWER_BED_DEFAULT_PALETTE = [
+    {"name": "bed_soil", "color_srgb": [86, 66, 50], "roughness": 1.0,
+     "texture": "mossy", "tex_scale": 7.0},
+    {"name": "bed_leaf_dark", "color_srgb": [50, 80, 46], "roughness": 0.95},
+    {"name": "bed_leaf_mid", "color_srgb": [72, 114, 62], "roughness": 0.95},
+    {"name": "bed_leaf_light", "color_srgb": [104, 152, 80], "roughness": 0.9},
+    {"name": "bloom_white", "color_srgb": [246, 243, 228], "roughness": 0.75},
+    {"name": "bloom_cream", "color_srgb": [240, 208, 120], "roughness": 0.75},
+    {"name": "bloom_gold", "color_srgb": [236, 178, 54], "roughness": 0.75},
+    {"name": "bloom_pink", "color_srgb": [226, 124, 150], "roughness": 0.75},
+    {"name": "bloom_rose", "color_srgb": [210, 88, 104], "roughness": 0.75},
+    {"name": "bloom_lilac", "color_srgb": [178, 150, 208], "roughness": 0.75},
+    {"name": "bloom_blue", "color_srgb": [150, 176, 214], "roughness": 0.75},
+]
+
+
+def _bed_soil_z(d, soil_r, soil_h):
+    """Height of the domed soil surface at radial distance d."""
+    f = min(1.0, max(0.0, float(d) / max(1e-6, float(soil_r))))
+    return float(soil_h) * (0.62 + 0.38 * math.sqrt(max(0.0, 1.0 - f * f)))
+
+
+def _bed_face(bm, corners, mat_index, uv_layer, uv_rect, smooth=False):
+    """One face with its material slot and a flat UV island for baking."""
+    f = bm.faces.new(corners)
+    f.material_index = mat_index
+    f.smooth = smooth
+    umin, vmin, umax, vmax = uv_rect
+    for loop in f.loops:
+        loop[uv_layer].uv = ((umin + umax) * 0.5, (vmin + vmax) * 0.5)
+    return f
+
+
+def _bed_soil(bm, uv_layer, uv_rect, cx, cy, soil_r, soil_h, seg, mat_index):
+    """Domed soil plug: rim just above ground, centre at soil_h, closed underside."""
+    angles = [2.0 * math.pi * i / seg for i in range(seg)]
+    fracs = (1.0, 0.86, 0.68, 0.48, 0.26, 0.1)
+    rings = []
+    for f in fracs:
+        r = soil_r * f
+        z = _bed_soil_z(r, soil_r, soil_h)
+        rings.append([bm.verts.new((cx + r * math.cos(a), cy + r * math.sin(a), z)) for a in angles])
+    foot = [bm.verts.new((cx + soil_r * math.cos(a), cy + soil_r * math.sin(a), 0.0)) for a in angles]
+    centre = bm.verts.new((cx, cy, soil_h))
+    sole = bm.verts.new((cx, cy, 0.0))
+    for i in range(seg):
+        j = (i + 1) % seg
+        for k in range(len(rings) - 1):
+            _bed_face(bm, (rings[k][i], rings[k][j], rings[k + 1][j], rings[k + 1][i]),
+                      mat_index, uv_layer, uv_rect)
+        _bed_face(bm, (rings[-1][i], rings[-1][j], centre), mat_index, uv_layer, uv_rect)
+        _bed_face(bm, (foot[i], foot[j], rings[0][j], rings[0][i]), mat_index, uv_layer, uv_rect)
+        _bed_face(bm, (sole, foot[j], foot[i]), mat_index, uv_layer, uv_rect)
+
+
+def _bed_disc(bm, uv_layer, uv_rect, rng, x, y, z, radius, seg, mat_index):
+    """A flat flower head: one petal n-gon facing up.
+
+    A cone reads as a tent from the game's top-down camera; a disc with wobbling
+    petal radii reads as a bloom seen from above, which is how the player sees it.
+    """
+    ring = []
+    for i in range(seg):
+        a = 2.0 * math.pi * i / seg
+        rr = radius * rng.uniform(0.82, 1.12)
+        ring.append(bm.verts.new((x + rr * math.cos(a), y + rr * math.sin(a),
+                                  z + rng.uniform(-0.012, 0.012))))
+    _bed_face(bm, tuple(ring), mat_index, uv_layer, uv_rect)
+
+
+def _bed_eye(bm, uv_layer, uv_rect, x, y, z, radius, mat_index):
+    """Warm centre of a daisy: a small raised disc, not a dot of geometry soup."""
+    ring = [bm.verts.new((x + radius * math.cos(2.0 * math.pi * i / 6),
+                          y + radius * math.sin(2.0 * math.pi * i / 6), z + 0.012)) for i in range(6)]
+    _bed_face(bm, tuple(ring), mat_index, uv_layer, uv_rect)
+
+
+def _bed_cup(bm, uv_layer, uv_rect, x, y, z, radius, height, seg, mat_index):
+    """Open cone: a hanging bell on a flower spike."""
+    ring = [bm.verts.new((x + radius * math.cos(2.0 * math.pi * i / seg),
+                          y + radius * math.sin(2.0 * math.pi * i / seg), z)) for i in range(seg)]
+    apex = bm.verts.new((x, y, z + height))
+    for i in range(seg):
+        j = (i + 1) % seg
+        _bed_face(bm, (ring[i], ring[j], apex), mat_index, uv_layer, uv_rect)
+
+
+def build_flower_bed(name, radius=2.66, center=(0.0, 0.0), soil_height=0.245, seed=1,
+                     groundcover=60, leaf_length=0.24, leaf_width=0.12,
+                     leaves_per_rosette=6, clovers=30, pads=120, pad_size=0.21, flower_masses=8,
+                     flowers_per_mass=30, flower_size=0.065, accents=0,
+                     clear_radius=0.0, flower_lift=0.19, tall_blooms=0,
+                     spike_height=0.8, palette=None, **_):
+    """Planted interior of a raised bed: domed soil, clover, a dense leaf carpet
+    and colour-grouped flower heads, sized to sit inside a `stone_kerb` ring.
+
+    `radius` is the soil edge, so it wants to be a little under the kerb's inner
+    face. Palette slots are ordered: 0 soil, 1-3 leaf tones (dark, mid, light),
+    4+ bloom colours. Bloom heads are flat petal discs, because the game camera
+    looks down: cones read as tents. Everything is clamped to the soil edge, so
+    no leaf or petal pokes through the kerb. One object out, one slot per palette
+    entry; the STATE record reports planted reach and top height for validate.
+    """
+    pal = list(palette or _FLOWER_BED_DEFAULT_PALETTE)
+    if len(pal) < 5:
+        raise ValueError(f"flower_bed {name!r}: palette needs soil, three leaf tones "
+                         f"and at least one bloom colour")
+    seed = int(seed)
+    rng = random.Random(seed * 4099 + 29)
+    cx, cy = (float(v) for v in center)
+    soil_r = float(radius)
+    soil_h = float(soil_height)
+    if soil_r <= 0 or soil_h <= 0:
+        raise ValueError(f"flower_bed {name!r}: radius and soil_height must be positive")
+    clear_r = max(0.0, float(clear_radius))
+    if clear_r >= soil_r * 0.8:
+        raise ValueError(f"flower_bed {name!r}: clear_radius must stay well inside radius")
+
+    mats = []
+    rects = []
+    for i, entry in enumerate(pal):
+        mats.append(_simple_mat(entry["name"], material_color(entry, (0.3, 0.3, 0.3)),
+                                entry.get("roughness", 0.9),
+                                texture=entry.get("texture"),
+                                tex_scale=entry.get("tex_scale", 4.0),
+                                tex_seed=seed))
+        rects.append(_patch_rect(i, len(pal)))
+    leaf_idx = [min(i, len(pal) - 1) for i in (1, 2, 3)]
+    bloom_idx = list(range(4, len(pal))) or [len(pal) - 1]
+    eye_idx = bloom_idx[1] if len(bloom_idx) > 1 else bloom_idx[0]
+
+    bm = bmesh.new()
+    uv_layer = bm.loops.layers.uv.new("UVMap")
+
+    def z_at(d):
+        return _bed_soil_z(d, soil_r, soil_h)
+
+    reach = 0.0
+    top = soil_h
+    _bed_soil(bm, uv_layer, rects[0], cx, cy, soil_r, soil_h, 44, 0)
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+
+    # ---- groundcover: a dense rosette carpet over the whole dome ----------
+    length = float(leaf_length)
+    width = float(leaf_width)
+    blades = max(3, int(leaves_per_rosette))
+    count = max(1, int(groundcover))
+    # The carpet stops short enough that a leaning leaf still lands inside the
+    # soil edge: the kerb hides nothing, so an overhang would show as leaves
+    # growing through the stone.
+    reserve = math.sin(1.0) * length * 1.35 + width * 0.5
+    d_max = max(0.15, soil_r - 0.04 - reserve)
+    r_in = min(d_max, clear_r + reserve) if clear_r > 0 else 0.0
+    for k in range(count):
+        t = (k + 0.5) / count
+        d = min(math.sqrt(r_in * r_in + t * (d_max * d_max - r_in * r_in)), d_max)
+        a = k * 2.399963229728653 + rng.uniform(-0.22, 0.22)
+        x, y, z = cx + d * math.cos(a), cy + d * math.sin(a), z_at(d)
+        mi = leaf_idx[k % 3]
+        for c in range(blades):
+            ang = c * (2.0 * math.pi / blades) + rng.uniform(-0.28, 0.28)
+            tilt = 0.5 + 0.5 * rng.random()
+            dirv = Vector((math.cos(ang) * math.sin(tilt),
+                           math.sin(ang) * math.sin(tilt), math.cos(tilt))).normalized()
+            side = Vector((-math.sin(ang), math.cos(ang), 0.0))
+            base = Vector((x, y, z)) - dirv * (0.12 * length)
+            lscale = 0.8 + 0.55 * rng.random()
+            _add_leaf(bm, uv_layer, base, dirv, side, length * lscale, width,
+                      0.0, 0.35, rects[mi], mi)
+            reach = max(reach, math.hypot(x - cx, y - cy)
+                        + math.sin(tilt) * length * lscale + width * 0.5)
+            top = max(top, z + math.cos(tilt) * length * lscale)
+
+    # ---- ground pads: broad low foliage closing the gaps -------------------
+    # A bed that shows a brown margin inside the kerb reads as unfinished, and
+    # rosettes cannot reach the edge without a leaf overhanging the stone. Pads
+    # are one flat n-gon each, so the soil can be covered all the way out.
+    pad_count = max(0, int(pads))
+    for k in range(pad_count):
+        a = k * 2.399963229728653 + rng.uniform(-0.2, 0.2)
+        size = float(pad_size) * rng.uniform(0.7, 1.25)
+        t = (k + 0.5) / max(1, pad_count)
+        r_out = max(size, soil_r - 0.04 - size)
+        p_in = min(r_out, clear_r + size) if clear_r > 0 else 0.0
+        d = math.sqrt(p_in * p_in + t * (r_out * r_out - p_in * p_in))
+        x, y = cx + d * math.cos(a), cy + d * math.sin(a)
+        mi = leaf_idx[k % 3]
+        _bed_disc(bm, uv_layer, rects[mi], rng, x, y, z_at(d) + 0.045, size, 7, mi)
+        reach = max(reach, d + size)
+        top = max(top, z_at(d) + 0.06)
+
+    # ---- clover: the village motif, flat three-lobe leaves ----------------
+    for k in range(int(clovers)):
+        a = rng.uniform(0.0, 2.0 * math.pi)
+        d = rng.uniform(max(0.45, clear_r + 0.2), max(0.5, soil_r - 0.3))
+        x, y, z = cx + d * math.cos(a), cy + d * math.sin(a), z_at(d) + 0.03
+        mi = leaf_idx[2]
+        for lobe in range(3):
+            ang = lobe * (2.0 * math.pi / 3.0) + rng.uniform(-0.18, 0.18)
+            lx = x + math.cos(ang) * 0.055
+            ly = y + math.sin(ang) * 0.055
+            rr = 0.062 + rng.uniform(-0.012, 0.015)
+            ring = [bm.verts.new((lx + rr * math.cos(2.0 * math.pi * i / 6),
+                                  ly + rr * math.sin(2.0 * math.pi * i / 6),
+                                  z)) for i in range(6)]
+            _bed_face(bm, tuple(ring), mi, uv_layer, rects[mi])
+        reach = max(reach, d + 0.12)
+
+    # ---- blooms: colour-grouped masses of flat heads ----------------------
+    masses = max(1, int(flower_masses))
+    per_mass = max(1, int(flowers_per_mass))
+    daisy_colours = set(bloom_idx[:2])
+    for m in range(masses):
+        a = m * 2.399963229728653 + 0.35
+        d = soil_r * (0.42 + 0.4 * ((m * 0.6180339887) % 1.0))
+        mx, my = cx + d * math.cos(a), cy + d * math.sin(a)
+        main = bloom_idx[m % len(bloom_idx)]
+        accent = bloom_idx[(m + 3) % len(bloom_idx)]
+        spread = 0.58 + 0.26 * rng.random()
+        for _ in range(per_mass):
+            ang = rng.uniform(0.0, 2.0 * math.pi)
+            rad = spread * math.sqrt(rng.random())
+            fx, fy = mx + math.cos(ang) * rad, my + math.sin(ang) * rad
+            fd = math.hypot(fx - cx, fy - cy)
+            size = float(flower_size) * rng.uniform(0.8, 1.3)
+            if fd + size > soil_r - 0.03 or fd - size < clear_r:
+                continue
+            # Heads sit just above the leaf canopy: at the play camera the bloom
+            # reads against green, and the soil only shows in the gaps.
+            lift = float(flower_lift) * (1.0, 1.0, 1.18, 1.36, 1.62)[rng.randrange(5)]
+            fz = z_at(fd) + lift
+            if lift > float(flower_lift) * 1.1:
+                stem_mi = leaf_idx[1]
+                sw = size * 0.55
+                ca, sa = math.cos(ang), math.sin(ang)
+                sbase = z_at(fd) + 0.03
+                _bed_face(bm, (bm.verts.new((fx - sa * sw, fy + ca * sw, sbase)),
+                               bm.verts.new((fx + sa * sw, fy - ca * sw, sbase)),
+                               bm.verts.new((fx + sa * sw, fy - ca * sw, fz)),
+                               bm.verts.new((fx - sa * sw, fy + ca * sw, fz))),
+                          stem_mi, uv_layer, rects[stem_mi])
+            mi = main if rng.random() < 0.85 else accent
+            _bed_disc(bm, uv_layer, rects[mi], rng, fx, fy, fz, size, 8, mi)
+            if mi in daisy_colours and rng.random() < 0.7:
+                _bed_eye(bm, uv_layer, rects[eye_idx], fx, fy, fz, size * 0.34, eye_idx)
+            reach = max(reach, fd + size)
+            top = max(top, fz + 0.012)
+
+    # ---- tall blooms: a few heads lifted clear of the carpet --------------
+    # Low greenery, medium heads and a handful of tall ones: without this the
+    # bed reads as one flat floral carpet from the camera.
+    for k in range(int(tall_blooms)):
+        a = k * 2.399963229728653 + 2.1
+        d = max(clear_r + 0.35, soil_r * (0.48 + 0.34 * ((k * 0.6180339887) % 1.0)))
+        d = min(d, soil_r - 0.16)
+        x, y = cx + d * math.cos(a), cy + d * math.sin(a)
+        sbase = z_at(d) + 0.02
+        h = 0.26 + 0.16 * rng.random()
+        stem_mi = leaf_idx[1]
+        sw = 0.014
+        for cross in range(2):
+            ax, ay = math.cos(a + cross * math.pi * 0.5), math.sin(a + cross * math.pi * 0.5)
+            _bed_face(bm, (bm.verts.new((x - ax * sw, y - ay * sw, sbase)),
+                           bm.verts.new((x + ax * sw, y + ay * sw, sbase)),
+                           bm.verts.new((x + ax * sw, y + ay * sw, sbase + h)),
+                           bm.verts.new((x - ax * sw, y - ay * sw, sbase + h))),
+                      stem_mi, uv_layer, rects[stem_mi])
+        mi = bloom_idx[(k * 3 + 2) % len(bloom_idx)]
+        size = float(flower_size) * 0.95
+        _bed_disc(bm, uv_layer, rects[mi], rng, x, y, sbase + h, size, 8, mi)
+        if mi in daisy_colours:
+            _bed_eye(bm, uv_layer, rects[eye_idx], x, y, sbase + h, size * 0.32, eye_idx)
+        top = max(top, sbase + h + 0.012)
+        reach = max(reach, d + size)
+
+    # ---- tall accents: flowering spikes lifting the silhouette ------------
+    for k in range(int(accents)):
+        a = k * 2.399963229728653 + 1.1
+        d = soil_r * 0.66
+        x, y = cx + d * math.cos(a), cy + d * math.sin(a)
+        base_z = z_at(d)
+        h = float(spike_height) * (0.85 + 0.25 * rng.random())
+        r0 = 0.012
+        lower = [bm.verts.new((x + r0 * math.cos(2.0 * math.pi * i / 4),
+                               y + r0 * math.sin(2.0 * math.pi * i / 4), base_z)) for i in range(4)]
+        upper = [bm.verts.new((x + r0 * 0.8 * math.cos(2.0 * math.pi * i / 4),
+                               y + r0 * 0.8 * math.sin(2.0 * math.pi * i / 4),
+                               base_z + h)) for i in range(4)]
+        stem_mi = leaf_idx[1]
+        for i in range(4):
+            j = (i + 1) % 4
+            _bed_face(bm, (lower[i], lower[j], upper[j], upper[i]), stem_mi, uv_layer, rects[stem_mi])
+        _bed_face(bm, (upper[3], upper[2], upper[1], upper[0]), stem_mi, uv_layer, rects[stem_mi])
+        mi = bloom_idx[(k * 2 + 1) % len(bloom_idx)]
+        for b in range(6):
+            t = b / 5.0
+            bz = base_z + h * (0.3 + 0.65 * t)
+            br = 0.03 + (1.0 - t) * 0.02
+            _bed_cup(bm, uv_layer, rects[mi], x, y, bz, br, br * 1.4, 5, mi)
+        top = max(top, base_z + h)
+        reach = max(reach, d + 0.06)
+
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    ob = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(ob)
+    for mat in mats:
+        ob.data.materials.append(mat)
+    _place(ob, name)
+
+    STATE.setdefault("flower_bed", []).append({
+        "node": name,
+        "radius": soil_r,
+        "soil_height": soil_h,
+        "groundcover": count,
+        "clovers": int(clovers),
+        "flowers": masses * per_mass,
+        "accents": int(accents),
+        "reach": reach,
+        "clear_radius": clear_r,
+        "tall_blooms": int(tall_blooms),
+        "top": top,
+        "palette": [e["name"] for e in pal],
+    })
+    return ob
+
+
+_COURIER_STATUE_DEFAULT_PALETTE = [
+    {"name": "statue_stone", "color_srgb": [212, 204, 188], "roughness": 0.92},
+    {"name": "statue_stone_mid", "color_srgb": [180, 174, 160], "roughness": 0.94},
+    {"name": "statue_stone_dark", "color_srgb": [118, 114, 106], "roughness": 0.95},
+    {"name": "seal_clover_green", "color_srgb": [96, 150, 82], "roughness": 0.8},
+    {"name": "parcel_stone", "color_srgb": [236, 232, 221], "roughness": 0.86},
+]
+
+
+def build_courier_statue(name, plinth_radius=0.44, plinth_height=0.50, seed=7,
+                         body_scale=1.0, lean=0.0, palette=None, **_):
+    """Standing bunny mailman on a carved plinth, for the central garden bed.
+
+    One object, five slots: 0 stone light (plinth, body, arms), 1 stone mid (cap,
+    muzzle, satchel bag, feet), 2 stone dark (eyes, brim shadow, belt, strap,
+    satchel flap), 3 seal green (parcel ribbon, stamp and plinth emblem),
+    4 parcel stone (the parcel itself).
+
+    The silhouette has to say three things from the play camera — rabbit ears,
+    mail satchel, parcel — so those are exaggerated and everything else is kept
+    soft and chunky: postal cap, jacket lapels, belt and buckle are readable
+    marks on stone, not modelled tailoring.
+
+    Facing: the figure is authored facing +Y, then the whole piece is turned 180°
+    about Z, because the first pass faced away from the play camera. It faces the
+    spawn side of the square with no rotation applied in game.
+    """
+    pal = list(palette or _COURIER_STATUE_DEFAULT_PALETTE)
+    if len(pal) < 5:
+        raise ValueError(f"courier_statue {name!r}: palette needs stone light/mid/dark, "
+                         f"seal green and parcel stone")
+    seed = int(seed)
+    plinth_r = float(plinth_radius)
+    plinth_h = float(plinth_height)
+    if plinth_r <= 0 or plinth_h <= 0.2:
+        raise ValueError(f"courier_statue {name!r}: plinth_radius and plinth_height must be positive")
+
+    mats = []
+    rects = []
+    for i, entry in enumerate(pal):
+        mats.append(_simple_mat(entry["name"], material_color(entry, (0.6, 0.6, 0.6)),
+                                entry.get("roughness", 0.92), tex_seed=seed))
+        rects.append(_patch_rect(i, len(pal)))
+    stone, stone_mid, stone_dark, seal, parcel = 0, 1, 2, 3, 4
+
+    bm = bmesh.new()
+    uv_layer = bm.loops.layers.uv.new("UVMap")
+
+    def face(verts, mi, smooth=False):
+        f = bm.faces.new(verts)
+        f.material_index = mi
+        f.smooth = smooth
+        umin, vmin, umax, vmax = rects[mi]
+        for loop in f.loops:
+            loop[uv_layer].uv = ((umin + umax) * 0.5, (vmin + vmax) * 0.5)
+        return f
+
+    def sphere(cx, cy, cz, rx, ry, rz, mi, seg=14, rings=8):
+        loops = []
+        for j in range(1, rings):
+            phi = math.pi * j / rings
+            sp, cp = math.sin(phi), math.cos(phi)
+            loops.append([bm.verts.new((cx + rx * sp * math.cos(2 * math.pi * i / seg),
+                                        cy + ry * sp * math.sin(2 * math.pi * i / seg),
+                                        cz + rz * cp)) for i in range(seg)])
+        top = bm.verts.new((cx, cy, cz + rz))
+        bot = bm.verts.new((cx, cy, cz - rz))
+        for i in range(seg):
+            j = (i + 1) % seg
+            face((top, loops[0][i], loops[0][j]), mi, True)
+            for k in range(len(loops) - 1):
+                face((loops[k][i], loops[k][j], loops[k + 1][j], loops[k + 1][i]), mi, True)
+            face((loops[-1][j], loops[-1][i], bot), mi, True)
+
+    def tube(a, b, r0, r1, mi, thick=1.0, seg=10, smooth=True):
+        """Tapered prism from a to b, flattened by `thick` across its short axis."""
+        a, b = Vector(a), Vector(b)
+        axis = (b - a).normalized()
+        ref = Vector((0.0, 1.0, 0.0)) if abs(axis.y) < 0.9 else Vector((1.0, 0.0, 0.0))
+        u = axis.cross(ref).normalized()
+        v = axis.cross(u).normalized()
+        rings = []
+        for p, r in ((a, r0), (b, r1)):
+            rings.append([bm.verts.new(p + u * (r * math.cos(2 * math.pi * i / seg))
+                                          + v * (r * thick * math.sin(2 * math.pi * i / seg)))
+                          for i in range(seg)])
+        for i in range(seg):
+            j = (i + 1) % seg
+            face((rings[0][i], rings[0][j], rings[1][j], rings[1][i]), mi, smooth)
+        face(tuple(rings[0][::-1]), mi)
+        face(tuple(rings[1]), mi)
+
+    def box(cx, cy, cz, sx, sy, sz, mi, rot_x=0.0):
+        pts = []
+        for dz in (-1, 1):
+            for dy in (-1, 1):
+                for dx in (-1, 1):
+                    x, y, z = dx * sx, dy * sy, dz * sz
+                    pts.append(bm.verts.new((cx + x,
+                                             cy + y * math.cos(rot_x) - z * math.sin(rot_x),
+                                             cz + y * math.sin(rot_x) + z * math.cos(rot_x))))
+        for q in ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1),
+                  (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)):
+            face(tuple(pts[i] for i in q), mi)
+
+    def disc_front(cx, cy, cz, r, mi, seg=9):
+        """Flat disc in the XZ plane, facing +Y."""
+        face(tuple(bm.verts.new((cx + r * math.cos(2 * math.pi * i / seg), cy,
+                                 cz + r * math.sin(2 * math.pi * i / seg)))
+                   for i in range(seg)), mi)
+
+    def clover(cx, cy, cz, lobe_r, spread, mi, stem=0.0):
+        for lobe in range(3):
+            a = math.radians(90.0 + 120.0 * lobe)
+            disc_front(cx + math.cos(a) * spread, cy, cz + math.sin(a) * spread, lobe_r, mi)
+        if stem > 0:
+            tube((cx, cy, cz - spread * 0.55), (cx, cy, cz - spread * 0.55 - stem),
+                 0.011, 0.008, mi, thick=0.6, seg=6)
+
+    # ---- plinth: narrow pedestal, carved clover on the front ---------------
+    base_r = plinth_r + 0.04
+    lip = plinth_h * 0.10
+    tube((0, 0, 0.0), (0, 0, 0.06), base_r, base_r * 0.985, stone_dark, 1.0, 20)
+    tube((0, 0, 0.06), (0, 0, plinth_h - lip), plinth_r, plinth_r * 0.92, stone, 1.0, 22)
+    tube((0, 0, plinth_h - lip), (0, 0, plinth_h), plinth_r * 1.035, plinth_r * 1.0,
+         stone_mid, 1.0, 22)
+    clover(0.0, plinth_r * 0.965, plinth_h * 0.46, 0.048, 0.052, seal, stem=0.075)
+
+    z0 = plinth_h
+    body_mark = len(bm.verts)
+
+    # ---- feet and legs: standing, weight on both feet ----------------------
+    for side in (-1.0, 1.0):
+        sphere(side * 0.100, 0.070, 0.048, 0.078, 0.130, 0.050, stone_mid)
+        tube((side * 0.094, 0.020, 0.070), (side * 0.082, 0.000, 0.420),
+             0.072, 0.086, stone, 1.0, 10)
+
+    # ---- body: jacket over the hips, belt, lapels, buttons ----------------
+    sphere(0.0, -0.010, 0.500, 0.162, 0.138, 0.122, stone)
+    sphere(0.0, 0.000, 0.740, 0.186, 0.152, 0.205, stone)
+    box(0.0, 0.132, 0.600, 0.150, 0.022, 0.026, stone_dark)          # belt
+    for side in (-1.0, 1.0):                                          # lapels
+        box(side * 0.056, 0.146, 0.878, 0.048, 0.016, 0.072, stone_mid)
+    for k in range(2):                                                # buttons
+        disc_front(0.0, 0.170, 0.856 - k * 0.052, 0.016, stone_dark)
+
+    # ---- arms forward, paws closing on the parcel -------------------------
+    for side in (-1.0, 1.0):
+        sphere(side * 0.170, 0.005, 0.880, 0.076, 0.074, 0.070, stone)
+        tube((side * 0.174, 0.020, 0.858), (side * 0.124, 0.190, 0.700),
+             0.058, 0.048, stone, 1.0, 10)
+        sphere(side * 0.122, 0.218, 0.686, 0.052, 0.048, 0.046, stone_mid)
+
+    # ---- the parcel: squared edges, ribbon band, postal stamp -------------
+    box(0.0, 0.248, 0.686, 0.180, 0.078, 0.135, parcel)
+    box(0.0, 0.248, 0.686, 0.032, 0.082, 0.139, seal)                 # ribbon, upright
+    box(0.0, 0.248, 0.716, 0.184, 0.082, 0.030, seal)                 # ribbon, across
+    disc_front(0.090, 0.328, 0.734, 0.026, seal)                      # stamp
+
+    # ---- head: round, friendly, muzzle forward ----------------------------
+    head_z = 1.120
+    sphere(0.0, 0.020, head_z, 0.205, 0.200, 0.190, stone)              # skull
+    sphere(0.0, 0.135, head_z - 0.085, 0.185, 0.140, 0.115, stone)      # cheeks
+    sphere(0.0, 0.215, head_z - 0.055, 0.100, 0.098, 0.078, stone_mid)  # muzzle
+    box(0.0, 0.300, head_z - 0.038, 0.028, 0.018, 0.022, stone_dark)    # nose
+    box(0.0, 0.286, head_z - 0.088, 0.018, 0.014, 0.022, stone_dark)    # mouth
+    for side in (-1.0, 1.0):
+        sphere(side * 0.098, 0.180, head_z + 0.045, 0.032, 0.020, 0.032, stone_dark)
+        sphere(side * 0.150, 0.108, head_z - 0.078, 0.072, 0.068, 0.064, stone)
+
+    # ---- postal cap: crown low on the brow, peaked brim forward -----------
+    sphere(0.0, -0.010, 1.252, 0.208, 0.202, 0.086, stone_mid)
+    box(0.0, 0.208, 1.222, 0.168, 0.092, 0.018, stone_mid, rot_x=-0.14)
+    sphere(0.0, -0.010, 1.336, 0.026, 0.026, 0.022, stone_mid)
+
+    # ---- long upright ears, rising behind the cap -------------------------
+    for side in (-1.0, 1.0):
+        tube((side * 0.074, -0.055, 1.270), (side * 0.112, -0.118, 1.545),
+             0.092, 0.064, stone, thick=0.42, seg=10)
+        sphere(side * 0.112, -0.118, 1.545, 0.064, 0.031, 0.048, stone)
+
+    # ---- satchel on the left hip, strap crossing the chest ----------------
+    tube((-0.150, 0.085, 0.905), (0.232, 0.072, 0.545), 0.034, 0.034,
+         stone_dark, thick=0.6, seg=8)
+    box(0.240, 0.118, 0.468, 0.115, 0.092, 0.168, stone_mid)
+    box(0.240, 0.198, 0.560, 0.119, 0.026, 0.078, stone_dark, rot_x=0.14)
+    box(0.240, 0.232, 0.492, 0.038, 0.018, 0.034, stone_dark)
+    sphere(0.0, -0.170, 0.500, 0.080, 0.075, 0.075, stone_mid)        # tail
+
+    # ---- scale the figure, then turn the whole piece to face the camera ---
+    body_scale = max(0.2, float(body_scale))
+    if abs(body_scale - 1.0) > 1e-6:
+        for v in list(bm.verts)[body_mark:]:
+            v.co.x *= body_scale
+            v.co.y *= body_scale
+            v.co.z = z0 + (v.co.z - z0) * body_scale
+    # A slight forward lean, pivoting at the hips: he is offering the parcel to
+    # someone arriving in the square, not standing at attention. Applied before
+    # the 180° turn, so the lean ends up toward the play camera.
+    lean = max(0.0, float(lean))
+    if lean > 1e-6:
+        ca, sa = math.cos(lean), math.sin(lean)
+        pivot_z = z0 + 0.45
+        for v in list(bm.verts)[body_mark:]:
+            dy, dz = v.co.y, v.co.z - pivot_z
+            v.co.y = dy * ca + dz * sa
+            v.co.z = pivot_z - dy * sa + dz * ca
+
+    # The first pass faced away from the play camera; the plinth emblem goes
+    # with the figure, so the whole object turns, not just the body.
+    for v in bm.verts:
+        v.co.x = -v.co.x
+        v.co.y = -v.co.y
+
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    ob = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(ob)
+    for mat in mats:
+        ob.data.materials.append(mat)
+    _place(ob, name)
+
+    reach = max(base_r, 0.360 * body_scale)
+    STATE.setdefault("courier_statue", []).append({
+        "node": name,
+        "plinth_radius": plinth_r,
+        "plinth_height": plinth_h,
+        "body_scale": body_scale,
+        "reach": reach,
+        "top": z0 + 1.610 * body_scale,
+        "palette": [e["name"] for e in pal],
+    })
+    return ob
+
+
+_BENCH_DEFAULT_PALETTE = [
+    {"name": "bench_wood", "color_srgb": [158, 114, 70], "roughness": 0.82,
+     "texture": "wood_grain", "tex_scale": 2.4},
+    {"name": "bench_wood_dark", "color_srgb": [103, 69, 40], "roughness": 0.86,
+     "texture": "wood_grain", "tex_scale": 2.4},
+    {"name": "bench_iron", "color_srgb": [62, 58, 52], "roughness": 0.55, "metallic": 0.45},
+]
+
+
+def build_bench(name, length=2.2, depth=0.62, seat_height=0.45, back_height=1.02,
+                seed=1, palette=None, **_):
+    """Park bench for the plaza ring: three seat planks, slatted back, iron-capped ends.
+
+    Authored facing +Y (the recipe convention), so it exports facing -Z and takes
+    the usual placement turn. Origin sits on the ground at the bench centre, X is
+    the length axis. Three material slots: timber, dark timber (end frames and
+    posts) and iron (end caps, apron bolts).
+
+    The read that matters at the 10-tile camera is a slatted back and visible legs
+    against the light paving, so the back slats stand proud of the rails and the
+    end frames are deep enough to cast a shadow of their own.
+    """
+    pal = list(palette or _BENCH_DEFAULT_PALETTE)
+    if len(pal) < 3:
+        raise ValueError(f"bench {name!r}: palette needs timber, dark timber and iron")
+    seed = int(seed)
+    L, D, H, BH = float(length), float(depth), float(seat_height), float(back_height)
+    if not 1.4 <= L <= 2.8:
+        raise ValueError(f"bench {name!r}: length {L} must be 1.4..2.8 tiles")
+    if not 0.5 <= D <= 0.9:
+        raise ValueError(f"bench {name!r}: depth {D} must be 0.5..0.9 tiles")
+    if not 0.40 <= H <= 0.56:
+        raise ValueError(f"bench {name!r}: seat_height {H} must be 0.40..0.56")
+    if not H + 0.35 <= BH <= 1.25:
+        raise ValueError(f"bench {name!r}: back_height {BH} must be seat + 0.35 .. 1.25")
+
+    mats, rects = [], []
+    for i, entry in enumerate(pal):
+        mats.append(_simple_mat(entry["name"], material_color(entry, (0.5, 0.36, 0.24)),
+                                entry.get("roughness", 0.84),
+                                metallic=entry.get("metallic", 0.0),
+                                texture=entry.get("texture"),
+                                tex_scale=entry.get("tex_scale", 2.4),
+                                tex_seed=seed))
+        rects.append(_patch_rect(i, len(pal)))
+    timber, timber_dark, iron = 0, 1, 2
+
+    bm = bmesh.new()
+    uv_layer = bm.loops.layers.uv.new("UVMap")
+
+    def face(verts, mi):
+        f = bm.faces.new(verts)
+        f.material_index = mi
+        f.smooth = False
+        umin, vmin, umax, vmax = rects[mi]
+        for loop in f.loops:
+            loop[uv_layer].uv = ((umin + umax) * 0.5, (vmin + vmax) * 0.5)
+        return f
+
+    def block(cx, cy, cz, hx, hy, hz, mi, rot_x=0.0):
+        """Timber block from half-extents, optionally tipped about its own X."""
+        pts = []
+        for dz in (-1, 1):
+            for dy in (-1, 1):
+                for dx in (-1, 1):
+                    x, y, z = dx * hx, dy * hy, dz * hz
+                    pts.append(bm.verts.new((cx + x,
+                                             cy + y * math.cos(rot_x) - z * math.sin(rot_x),
+                                             cz + y * math.sin(rot_x) + z * math.cos(rot_x))))
+        for q in ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1),
+                  (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)):
+            face(tuple(pts[i] for i in q), mi)
+
+    half_len = L / 2.0
+    end_x = half_len - 0.085
+    seat_front_y = D / 2.0 - 0.045
+    seat_back_y = -D / 2.0 + 0.075
+    plank_h = 0.048
+    planks = 3
+    gap = 0.024
+    span = seat_front_y - seat_back_y
+    plank_d = (span - gap * (planks - 1)) / planks
+
+    # --- Seat: three planks with open joints ---------------------------------
+    for p in range(planks):
+        cy = seat_back_y + plank_d / 2.0 + p * (plank_d + gap)
+        block(0.0, cy, H - plank_h / 2.0, half_len - 0.06, plank_d / 2.0, plank_h / 2.0, timber)
+
+    # --- End frames: solid side panels, capped in iron -----------------------
+    frame_h = H - 0.02
+    frame_hy = D / 2.0 - 0.055
+    for sx in (end_x, -end_x):
+        block(sx, -0.012, frame_h / 2.0, 0.075, frame_hy, frame_h / 2.0, timber_dark)
+        block(sx, -0.012, H - 0.014, 0.088, frame_hy + 0.012, 0.016, iron)
+
+    # --- Front apron and its bolts ------------------------------------------
+    apron_z = H - plank_h - 0.055
+    block(0.0, seat_front_y - 0.045, apron_z, half_len - 0.28, 0.026, 0.05, timber_dark)
+    for bx in (-0.55, 0.0, 0.55):
+        block(bx, seat_front_y - 0.016, apron_z, 0.018, 0.012, 0.018, iron)
+
+    # --- Back: two posts, five slats, top and mid rails ---------------------
+    tilt = math.radians(9.0)
+
+    def lean(z):
+        """Y position of the back's centre line at height z (hinged at the seat)."""
+        return seat_back_y + 0.015 - math.tan(tilt) * (z - H)
+
+    post_z0 = H - 0.05
+    post_zc = (post_z0 + BH) / 2.0
+    for sx in (end_x, -end_x):
+        block(sx, lean(post_zc), post_zc, 0.055, 0.042, (BH - post_z0) / 2.0, timber_dark,
+              rot_x=tilt)
+
+    slat_z0, slat_z1 = H + 0.035, BH - 0.13
+    slat_c = (slat_z0 + slat_z1) / 2.0
+    inner = 2.0 * end_x - 0.16
+    slats = 5
+    pitch = inner / slats
+    for s in range(slats):
+        sx = -inner / 2.0 + pitch * (s + 0.5)
+        block(sx, lean(slat_c), slat_c, (pitch - 0.045) / 2.0, 0.021,
+              (slat_z1 - slat_z0) / 2.0, timber, rot_x=tilt)
+
+    rail_z = BH - 0.055
+    block(0.0, lean(rail_z), rail_z, half_len - 0.12, 0.038, 0.045, timber, rot_x=tilt)
+    mid_z = H + 0.16
+    block(0.0, lean(mid_z), mid_z, half_len - 0.24, 0.028, 0.032, timber_dark, rot_x=tilt)
+
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    ob = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(ob)
+    for mat in mats:
+        ob.data.materials.append(mat)
+    _place(ob, name)
+
+    STATE.setdefault("bench", []).append({
+        "node": name, "length": L, "depth": D, "seat_height": H, "height": BH,
+        "palette": [e["name"] for e in pal],
+    })
+    return ob
+
+
+_LANTERN_DEFAULT_PALETTE = [
+    {"name": "lantern_timber", "color_srgb": [122, 90, 56], "roughness": 0.8,
+     "texture": "wood_grain", "tex_scale": 2.8},
+    {"name": "lantern_iron", "color_srgb": [54, 51, 46], "roughness": 0.5, "metallic": 0.45},
+    {"name": "lantern_glass", "color_srgb": [255, 206, 132], "roughness": 0.35},
+]
+
+
+def build_lantern_post(name, height=2.32, post_radius=0.078, seed=1, palette=None, **_):
+    """Warm timber-and-iron plaza lantern on a narrow post.
+
+    Standing lamp, not a yard light: an iron shoe, a tapered octagonal post with
+    two collars, a square glazed head framed by four iron corner posts, a hipped
+    roof and a finial. Origin at ground contact, +Y is the front, axially
+    symmetric so no facing turn is needed. Three slots: timber (post, roof),
+    iron (shoe, collars, frame), warm glass (the glazed box).
+
+    `height` is the total to the finial; the glazed head lands between roughly
+    1.6 and 2.1 for the default, which is the band that reads at the play camera.
+    """
+    pal = list(palette or _LANTERN_DEFAULT_PALETTE)
+    if len(pal) < 3:
+        raise ValueError(f"lantern_post {name!r}: palette needs timber, iron and glass")
+    seed = int(seed)
+    total = float(height)
+    post_r = float(post_radius)
+    if not 1.9 <= total <= 2.9:
+        raise ValueError(f"lantern_post {name!r}: height {total} must be 1.9..2.9 tiles")
+    if not 0.05 <= post_r <= 0.12:
+        raise ValueError(f"lantern_post {name!r}: post_radius {post_r} must be 0.05..0.12")
+
+    mats, rects = [], []
+    for i, entry in enumerate(pal):
+        mats.append(_simple_mat(entry["name"], material_color(entry, (0.4, 0.32, 0.24)),
+                                entry.get("roughness", 0.7),
+                                metallic=entry.get("metallic", 0.0),
+                                texture=entry.get("texture"),
+                                tex_scale=entry.get("tex_scale", 2.8),
+                                tex_seed=seed))
+        rects.append(_patch_rect(i, len(pal)))
+    timber, iron, glass = 0, 1, 2
+
+    bm = bmesh.new()
+    uv_layer = bm.loops.layers.uv.new("UVMap")
+
+    def face(verts, mi):
+        f = bm.faces.new(verts)
+        f.material_index = mi
+        f.smooth = False
+        umin, vmin, umax, vmax = rects[mi]
+        for loop in f.loops:
+            loop[uv_layer].uv = ((umin + umax) * 0.5, (vmin + vmax) * 0.5)
+        return f
+
+    def block(cx, cy, cz, hx, hy, hz, mi):
+        pts = []
+        for dz in (-1, 1):
+            for dy in (-1, 1):
+                for dx in (-1, 1):
+                    pts.append(bm.verts.new((cx + dx * hx, cy + dy * hy, cz + dz * hz)))
+        for q in ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1),
+                  (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)):
+            face(tuple(pts[i] for i in q), mi)
+
+    def prism(z0, z1, r0, r1, mi, seg=8, rot=0.0):
+        rings = []
+        for z, r in ((z0, r0), (z1, r1)):
+            rings.append([bm.verts.new((r * math.cos(2.0 * math.pi * i / seg + rot),
+                                        r * math.sin(2.0 * math.pi * i / seg + rot), z))
+                          for i in range(seg)])
+        for i in range(seg):
+            j = (i + 1) % seg
+            face((rings[0][i], rings[0][j], rings[1][j], rings[1][i]), mi)
+        face(tuple(rings[0][::-1]), mi)
+        face(tuple(rings[1]), mi)
+        return rings[-1]
+
+    def pyramid(z0, z1, r0, r1, mi, rot=math.pi / 4.0):
+        """Square frustum; rot 45 degrees puts its faces on the box axes."""
+        loft_rings = []
+        for z, r in ((z0, r0), (z1, r1)):
+            loft_rings.append([bm.verts.new((r * math.cos(2.0 * math.pi * i / 4.0 + rot),
+                                             r * math.sin(2.0 * math.pi * i / 4.0 + rot), z))
+                               for i in range(4)])
+        for i in range(4):
+            j = (i + 1) % 4
+            face((loft_rings[0][i], loft_rings[0][j], loft_rings[1][j], loft_rings[1][i]), mi)
+        face(tuple(loft_rings[0][::-1]), mi)
+        face(tuple(loft_rings[1]), mi)
+
+    head_h = 0.34
+    roof_h = 0.17
+    finial_h = 0.06
+    roof_top = total - finial_h
+    roof_bottom = roof_top - roof_h
+    head_top = roof_bottom - 0.02
+    head_bottom = head_top - head_h
+
+    # --- Foot: iron shoe and post -------------------------------------------
+    block(0.0, 0.0, 0.035, 0.165, 0.165, 0.035, iron)
+    block(0.0, 0.0, 0.085, 0.115, 0.115, 0.022, iron)
+    prism(0.10, head_bottom + 0.015, post_r * 1.12, post_r * 0.82, timber, seg=8)
+    for cz in (0.62, 1.16):
+        prism(cz, cz + 0.05, post_r * 1.24, post_r * 1.24, iron, seg=8)
+
+    # --- Glazed head: warm box inside an iron frame -------------------------
+    block(0.0, 0.0, head_bottom + 0.016, 0.195, 0.195, 0.016, iron)
+    block(0.0, 0.0, head_top - 0.016, 0.195, 0.195, 0.016, iron)
+    block(0.0, 0.0, (head_bottom + head_top) / 2.0, 0.148, 0.148, head_h / 2.0 - 0.012, glass)
+    for sx in (-0.172, 0.172):
+        for sy in (-0.172, 0.172):
+            block(sx, sy, (head_bottom + head_top) / 2.0, 0.021, 0.021, head_h / 2.0, iron)
+
+    # --- Roof and finial -----------------------------------------------------
+    pyramid(roof_bottom, roof_top, 0.235, 0.055, timber)
+    block(0.0, 0.0, roof_top + 0.022, 0.028, 0.028, 0.026, iron)
+    prism(roof_top + 0.03, total - 0.012, 0.042, 0.012, iron, seg=6)
+
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    bm.to_mesh(mesh)
+    bm.free()
+    ob = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(ob)
+    for mat in mats:
+        ob.data.materials.append(mat)
+    _place(ob, name)
+
+    STATE.setdefault("lantern", []).append({
+        "node": name, "height": total, "head_bottom": head_bottom,
+        "glass_top": head_top, "palette": [e["name"] for e in pal],
+    })
+    return ob
+
+
 # Registry used by the recipe compiler
 BUILDERS = {
     "box": create_box, "rounded_box": create_rounded_box, "cylinder": create_cylinder,
@@ -1570,7 +2414,9 @@ BUILDERS = {
     "barrel": build_barrel, "crate": build_crate, "roof": build_roof, "window": build_window,
     "door": build_door, "stairs": build_stairs, "column": build_column, "wall": build_wall,
     "fence": build_fence, "tree": build_tree, "foliage_cluster": build_foliage_cluster,
-    "stone_kerb": build_stone_kerb,
+    "stone_kerb": build_stone_kerb, "flower_bed": build_flower_bed,
+    "courier_statue": build_courier_statue,
+    "bench": build_bench, "lantern_post": build_lantern_post,
     "weapon_blade": build_weapon_blade,
     "weapon_handle": build_weapon_handle,
     "text": build_text,
@@ -1597,6 +2443,10 @@ def op_build(params):
     STATE["manifest"] = manifest
     STATE["foliage"] = []
     STATE["kerb"] = []
+    STATE["flower_bed"] = []
+    STATE["courier_statue"] = []
+    STATE["bench"] = []
+    STATE["lantern"] = []
     node_tris = {}
     ignored_params = {}
     for node_name, spec in recipe.items():
@@ -1878,6 +2728,36 @@ def op_validate(params):
               f"{rec.get('hole_max_deg', 0.0):.2f} deg largest hole across "
               f"{rec.get('courses')} course(s) / {rec.get('blocks')} blocks, "
               f"{rec.get('coverage_deg', 0.0):.1f} deg laid per course")
+
+    # Bed-specific check: planting that grows past the soil edge would poke
+    # through the kerb, so the planted reach is measured against the radius.
+    for rec in STATE.get("courier_statue") or []:
+        check(f"courier_statue_fits[{rec['node']}]",
+              rec["reach"] <= rec["plinth_radius"] + 0.07 and rec["top"] <= 2.6,
+              f"{rec['reach']:.3f} horizontal reach vs plinth {rec['plinth_radius']:.3f}, "
+              f"top {rec['top']:.3f}")
+
+    for rec in STATE.get("flower_bed") or []:
+        check(f"flower_bed_inside[{rec['node']}]",
+              rec.get("reach", 0.0) <= rec.get("radius", 0.0) + 1e-6,
+              f"{rec.get('reach', 0.0):.3f} max planted reach vs {rec.get('radius', 0.0):.3f} "
+              f"radius, top {rec.get('top', 0.0):.3f}, {rec.get('flowers')} blooms, "
+              f"{rec.get('groundcover')} rosettes")
+
+    # Furnishing checks: a bench that is too tall reads as a fence, and a
+    # lantern whose light head sits low is a bollard. Both are silhouette calls,
+    # so they are measured against the bands the play camera can read.
+    for rec in STATE.get("bench") or []:
+        check(f"bench_seat[{rec['node']}]",
+              0.40 <= rec["seat_height"] <= 0.56 and rec["height"] <= 1.25,
+              f"seat {rec['seat_height']:.2f}, back {rec['height']:.2f}, "
+              f"footprint {rec['length']:.2f} x {rec['depth']:.2f}")
+
+    for rec in STATE.get("lantern") or []:
+        check(f"lantern_head[{rec['node']}]",
+              1.50 <= rec["head_bottom"] <= 2.10 and rec["height"] <= 2.9,
+              f"glazed head {rec['head_bottom']:.2f}..{rec['glass_top']:.2f}, "
+              f"top {rec['height']:.2f}")
 
     return {"pass": ok, "checks": checks, "triangles": tris, "budget": budget,
             "object_count": len(obs),

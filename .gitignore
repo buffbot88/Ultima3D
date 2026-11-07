@@ -5,3 +5,4 @@ Our Build Plan.md
 *.log
 __pycache__/
 *.pyc
+/tmp

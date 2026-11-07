@@ -23,7 +23,7 @@ BUILDERS = ["box", "rounded_box", "cylinder", "tapered_cylinder", "sphere", "tor
             "arch", "panel", "pipe", "curve", "extrusion", "lathe", "rock", "beam",
             "barrel", "crate", "roof", "window", "door", "stairs", "column", "wall",
             "fence", "tree", "foliage_cluster", "weapon_blade", "weapon_handle", "text",
-            "terrain", "scatter", "skydome"]
+            "terrain", "scatter", "skydome", "stone_kerb", "flower_bed", "courier_statue", "bench", "lantern_post"]
 
 # Builders whose geometry arguments have no usable default.
 REQUIRED_ARGS = {

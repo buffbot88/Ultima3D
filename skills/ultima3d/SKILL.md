@@ -4,7 +4,7 @@ description: Builds, renders, inspects, refines, validates and exports game-read
 license: MIT
 compatibility: Requires this repo on the user's own machine, Blender 5.2 installed, and Python 3.10+ with mcp and httpx. Serves 127.0.0.1 only; cannot run in a cloud workspace.
 metadata:
-  version: "9"
+  version: "10"
 ---
 
 # Ultima3D — agentic 3D asset work on this machine
@@ -110,9 +110,30 @@ Documented defaults: `finalize_asset` uses `triangle_budget=8000`, `collision="a
 
 ## 5. Recipes
 
-29 builders: `box, rounded_box, cylinder, tapered_cylinder, sphere, torus, arch, panel, pipe,
+36 builders: `box, rounded_box, cylinder, tapered_cylinder, sphere, torus, arch, panel, pipe,
 curve, extrusion, lathe, rock, beam, barrel, crate, roof, window, door, stairs, column, wall,
-fence, tree, weapon_blade, weapon_handle, terrain, scatter, skydome`.
+fence, tree, foliage_cluster, weapon_blade, weapon_handle, text, terrain, scatter, skydome,
+stone_kerb, flower_bed, courier_statue, bench, lantern_post`.
+
+`flower_bed` fills an authored radius with domed soil, clover, leaf rosettes and
+colour-grouped bloom masses; palette slots are soil, three leaf tones, then bloom
+colours, and it reports planted reach and top height for `flower_bed_inside`.
+
+`courier_statue` is the Clover Village focal piece: a seated rabbit courier on a
+narrow carved-clover plinth, holding a sealed letter, with a satchel and strap.
+It faces +Y (world +Z) and reports `reach` and `top` for `courier_statue_fits`.
+Keep the plinth narrow and tall — a wide drum buries the figure behind a planted
+bed, which is exactly what the first attempt did.
+
+`bench` builds a slatted timber park bench facing +Y, and `lantern_post` a
+warm timber-and-iron plaza lantern with a glazed head between about 1.6 and
+2.1; validate checks the seat/back bands and the lantern's light-head height.
+
+`stone_kerb` lays a raised bed boundary: blocks on `radius` (the centreline, so the
+footprint is radius + thickness/2 + cap_overhang), a base course plus an offset cap
+course, hairline joints and per-block jitter, `gaps`/`gap_deg` for path throats.
+Validate adds a `kerb_continuity[...]` check per course — a hole wider than 2 degrees
+means the boundary does not close.
 
 - A node is `{"builder": "...", plus that builder's parameters, optional "material": {...}}`;
   a node's material applies to every object it creates.

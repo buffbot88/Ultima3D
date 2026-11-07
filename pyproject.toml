@@ -1,6 +1,6 @@
 [project]
 name = "ultima3d"
-version = "9.0.0"
+version = "10.0.0"
 description = "Ultima3D: agentic 3D asset generator — procedural Blender compiler, live Blender/Godot/GIMP tools, loopback daemon and Freebuff skill bridge."
 license = { text = "MIT" }
 requires-python = ">=3.10"
