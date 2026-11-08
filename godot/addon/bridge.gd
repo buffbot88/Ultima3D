@@ -52,7 +52,14 @@ func _read_request(peer: StreamPeerTCP) -> PackedByteArray:
 	var guard: int = 0
 	while guard < 200 and (header_end < 0 or data.size() < header_end + content_length):
 		guard += 1
-		var chunk: PackedByteArray = peer.get_available_bytes(8192)
+		var avail: int = peer.get_available_bytes()
+		if avail <= 0:
+			OS.delay_msec(10)
+			continue
+		var res: Array = peer.get_partial_data(avail)
+		if res[0] != OK:
+			break
+		var chunk: PackedByteArray = res[1]
 		if chunk.is_empty():
 			OS.delay_msec(10)
 			continue
@@ -124,14 +131,14 @@ func _screenshot() -> Dictionary:
 	var dir: String = get_script().resource_path.get_base_dir().get_base_dir() + "/captures"
 	DirAccess.make_dir_recursive_absolute(dir)
 	var path: String = dir + "/viewport_%d.png" % Time.get_ticks_msec()
-	var viewport: Viewport = EditorInterface.get_editor_viewport()
+	var viewport: Viewport = Engine.get_main_loop().root
 	if viewport == null:
 		return {"error": "No editor viewport available"}
 	var img: Image = viewport.get_texture().get_image()
 	var err: Error = img.save_png(path)
 	if err != OK:
 		return {"error": "Screenshot save failed: %s" % err}
-	return {"ok": true, "path": path}
+	return {"ok": true, "path": ProjectSettings.globalize_path(path)}
 
 
 func _send_json(peer: StreamPeerTCP, result: Dictionary) -> void:
