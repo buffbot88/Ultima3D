@@ -42,7 +42,8 @@ def request(url, body=None, timeout=30):
 def main():
     port = free_port()
     base = f"http://127.0.0.1:{port}"
-    env = dict(os.environ, ULTIMA3D_OUT=OUT, ULTIMA3D_SESSION_MINUTES="5")
+    env = dict(os.environ, ULTIMA3D_OUT=OUT, ULTIMA3D_SESSION_MINUTES="5",
+                 ULTIMA3D_NO_DASHBOARD="1")
     proc = subprocess.Popen(
         [sys.executable, "-m", "ultima3d.server", "--http", f"127.0.0.1:{port}"],
         cwd=ROOT, env=env, stdin=subprocess.DEVNULL,

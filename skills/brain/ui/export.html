@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🧠 Brain - export project brain piece</title>
+<link rel="icon" href="data:,">
+<style>
+ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #1e293b; margin: 0; padding: 24px; }
+ .wrap { max-width: 760px; margin: 0 auto; }
+ h1 { font-size: 20px; margin: 0 0 6px; }
+ .sub { color: #64748b; font-size: 13px; margin: 0 0 24px; }
+ .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 2px rgba(15,23,42,.06), 0 8px 24px rgba(15,23,42,.06); margin-bottom: 12px; }
+ .card h2 { margin: 0 0 4px; font-size: 15px; }
+ .card p { margin: 0 0 10px; color: #64748b; font-size: 13px; }
+ select, input[type=search], textarea, button { font: inherit; }
+ select { padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; width: 100%; }
+ textarea { width: 100%; min-height: 150px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; resize: vertical; }
+ .row { display: flex; gap: 10px; align-items: center; }
+ .btn { padding: 9px 18px; border-radius: 8px; border: 1px solid #e2e8f0; background: #fff; cursor: pointer; }
+ .btn:hover { background: #f1f5f9; }
+ .btn.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+ .btn.primary:hover { background: #1d4ed8; }
+ .btn.ghost { color: #64748b; }
+ .hint { font-size: 12px; color: #94a3b8; }
+ .ok { color: #16a34a; font-weight: 600; }
+ .meta { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+ .tag { background: #f1f5f9; color: #475569; border-radius: 99px; padding: 2px 8px; font-size: 11px; }
+ .scope { color: #fff; border-radius: 99px; padding: 2px 9px; font-size: 11px; font-weight: 500; }
+ .count { font-size: 12px; color: #94a3b8; }
+ .errors { margin-top: 8px; font-size: 12px; color: #dc2626; }
+ .copy-wrap { position: relative; display: inline-block; }
+ .copy-wrap input { padding: 8px 30px 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px; width: 100%; font-family: ui-monospace, monospace; font-size: 12.5px; }
+ .copy-wrap button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); padding: 4px 10px; border-radius: 6px; border: 1px solid #e2e8f0; background: #fff; font-size: 12px; }
+ fieldset { border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 14px; margin: 0; }
+ legend { font-size: 13px; color: #64748b; padding: 0 6px; }
+</style>
+</head>
+<body>
+ <div class="wrap">
+ <h1>🧠 Export a project's brain</h1>
+ <p class="sub">Pull every entry for one scope into a single Markdown file. Copy it to another PC and any Freebuff agent can read the full scope instead of piecing it back together entry by entry.</p>
+
+ <div id="error" class="errors"></div>
+
+ <form id="form">
+ <div class="card">
+ <h2>1. Pick the scope to export</h2>
+ <label for="scope" class="hint">The brain server must be running at <code>http://127.0.0.1:8791</code> - or edit the URL below.</label>
+ <select id="scope" required><option value=""> -  choose a project / scope  - </option></select>
+ <div>
+ <label class="hint" style="display:block;margin-top:8px">API base URL (optional, for a brain on another machine):</label>
+ <input type="search" id="base" style="width:100%;padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px" value="http://127.0.0.1:8791" spellcheck="false">
+ </div>
+ </div>
+
+ <div class="card">
+ <h2>2. Choose what to include</h2>
+ <fieldset>
+ <legend>Entry types</legend>
+ <div class="row" style="margin-top:6px">
+ <select id="types" multiple style="height:auto">
+ <option value="knowledge" selected>knowledge</option>
+ <option value="memory" selected>memory</option>
+ <option value="decision" selected>decision</option>
+ <option value="note" selected>note</option>
+ </select>
+ </div>
+ <p class="hint" style="margin:6px 0 0">Ctrl/Cmd-click to deselect. Default: all types.</p>
+ </fieldset>
+ <div class="row" style="margin-top:14px">
+ <div>
+ <label for="tags" class="hint" style="display:block">Only include entries tagged with… (comma separated, optional)</label>
+ <input type="search" id="tags" placeholder="e.g. gotcha, port, migration" style="width:100%;padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px">
+ </div>
+ </div>
+ <div class="row" style="margin-top:14px">
+ <label class="hint" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+ <input type="checkbox" id="metaOnly"> Include frontmatter metadata only (lighter export - titles, types, tags, dates, sources; body omitted)
+ </label>
+ </div>
+ </div>
+
+ <div class="card">
+ <h2>3. Preview / generate</h2>
+ <button type="submit" class="btn primary">Load entries from the brain</button>
+ <span id="fetched" class="count" style="margin-left:10px"></span>
+ </div>
+ </form>
+
+ <div id="out" style="display:none">
+ <div class="card">
+ <h2>4. The exported Markdown</h2>
+ <p class="hint">One file - paste it into an agent prompt, drop it in a Markdown tool, or save it as <code>scope-NAME.md</code> and ship it alongside the project.</p>
+ <textarea id="md" spellcheck="false"></textarea>
+ <div class="row" style="margin-top:12px">
+ <div class="copy-wrap" style="flex:1">
+ <input type="text" id="clip" readonly>
+ <button type="button" id="copyBtn" title="Copy to clipboard">Copy</button>
+ </div>
+ <button type="button" class="btn" id="downloadBtn">Download .md</button>
+ <a href="#" id="rawHref" style="display:none"></a>
+ </div>
+ </div>
+
+ <div class="card">
+ <h2>5. How an agent consumes it on another PC</h2>
+ <p class="hint">Paste the whole block into a Freebuff agent prompt along with:</p>
+ <ul style="padding-left:22px;color:#475569;line-height:1.6">
+ <li>The project folder path on that machine (if relevant).</li>
+ <li>Any question you want it to answer from that scope's history - "what ports did this project use", "what bugs were fixed", "what's the current state", etc.</li>
+ </ul>
+ <p class="hint" style="margin-top:8px">The Markdown is self-contained: each entry keeps its title, type, scope, tags, created/updated dates, source, and body, so the agent doesn't need a live brain to understand the project's context.</p>
+ </div>
+ </div>
+ </div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const scopeEmoji = { global:'🌐', playport:'🎮', professionpilot:'💼', 'future-greenhouse':'🌱', project:'☕', 'haul-empire':'🚛', 'bee-empire':'🐝', pdfeditor:'📄', plugins:'🧩', 'katunga-businessplan':'📈', 'localbuff':'🔌' };
+
+async function api(path, opts) {
+ const url = new URL(path, $('base').value.trim().replace(/\/$/,''));
+ const res = await fetch(url.toString(), opts);
+ if (!res.ok) {
+ let msg = res.status + ' ' + res.statusText;
+ try { const j = await res.json(); if (j.error) msg = j.error; } catch(e) {}
+ throw new Error(msg);
+ }
+ return res.json();
+}
+
+function renderError(msg) {
+ $('error').textContent = msg || '';
+}
+
+async function loadScopes() {
+ const sel = $('scope');
+ sel.disabled = true;
+ sel.innerHTML = '<option value="">loading…</option>';
+ try {
+ const all = await api('/api/entries');
+ const scopes = [...new Set(all.map(e => e.scope || 'global'))].sort((a,b) => (a==='global'?-1:b==='global'?1:a.localeCompare(b)));
+ sel.innerHTML = '<option value=""> -  choose a project / scope  - </option>' + scopes.map(s => `<option value="${esc(s)}">${scopeEmoji[s]||'📦'} ${esc(s)}</option>`).join('');
+ } catch(e) {
+ sel.innerHTML = '<option value=""> -  choose (can’t list scopes)  - </option>';
+ renderError('Could not list scopes from ' + $('base').value + ': ' + e.message);
+ } finally {
+ sel.disabled = false;
+ }
+}
+
+function selectedTypes() {
+ const sel = $('types');
+ const picked = [];
+ for (let i = 0; i < sel.options.length; i++) if (sel.options[i].selected) picked.push(sel.options[i].value);
+ return picked.length ? picked : ['knowledge','memory','decision','note'];
+}
+
+function buildExport(scope, types, tagFilter, metaOnly, entries) {
+ const lines = [];
+ lines.push(`# Brain export - scope: ${esc(scope)}`);
+ lines.push(``);
+ lines.push(`Exported from brain at ${new Date().toISOString().slice(0,19).replace('T',' ')} Z.`);
+ lines.push(`Types included: ${types.join(', ')}`);
+ lines.push(`Entries: ${entries.length}`);
+ lines.push(``);
+ lines.push(`---`);
+ lines.push(``);
+ lines.push(`This file is a self-contained snapshot of everything the brain knows about the **${esc(scope)}** scope. Any agent can read it without a live brain server. Each entry keeps its title, type, tags, dates, source, and body, so the history of the project is preserved in one place.`);
+ lines.push(``);
+ lines.push(`## Entries (newest first)`);
+ lines.push(``);
+
+ for (const e of entries) {
+ lines.push(`### ${esc(e.title)}`);
+ lines.push(``);
+ lines.push(`- **id:** ${esc(e.id)}`);
+ lines.push(`- **type:** ${esc(e.type)}`);
+ lines.push(`- **scope:** ${esc(e.scope || 'global')}`);
+ if (e.tags && e.tags.length) lines.push(`- **tags:** ${e.tags.map(t => esc(t)).join(', ')}`);
+ lines.push(`- **created:** ${esc(e.created || ' - ')}`);
+ lines.push(`- **updated:** ${esc(e.updated ? new Date(e.updated).toLocaleString() : (e.created ? new Date(e.created).toLocaleString() : ' - '))}`);
+ if (e.source) lines.push(`- **source:** ${esc(e.source)}`);
+ lines.push(``);
+ if (!metaOnly && e.body) {
+ lines.push(e.body);
+ lines.push(``);
+ } else if (metaOnly) {
+ lines.push('_body omitted in metadata-only export_');
+ lines.push(``);
+ } else {
+ lines.push('_no body_');
+ lines.push(``);
+ }
+ lines.push(`___`);
+ lines.push(``);
+ }
+
+ lines.push(``);
+ lines.push(`## How to use this export`);
+ lines.push(``);
+ lines.push(`1. Copy this whole file to the other PC, or paste it directly into a Freebuff agent prompt.`);
+ lines.push(`2. Tell the agent the project folder path if it needs to look at code/config.`);
+ lines.push(`3. Ask the agent a question scoped to this history - e.g. "what ports did this project use", "what bugs were fixed and how", "what is the current state", "what decisions were made and why".`);
+ lines.push(`4. To keep this export up to date on the source machine, re-run this export and overwrite the old file. The brain itself is still the source of truth; this is a portable snapshot.`);
+ lines.push(``);
+
+ return lines.join('\n');
+}
+
+async function handleSubmit(ev) {
+ ev.preventDefault();
+ renderError('');
+ $('out').style.display = 'none';
+ $('fetched').textContent = '';
+
+ const scope = $('scope').value;
+ if (!scope) { renderError('Pick a scope first.'); return; }
+ const types = selectedTypes();
+ const tagFilter = ($('tags').value || '').split(',').map(s => s.trim()).filter(Boolean);
+ const metaOnly = $('metaOnly').checked;      const params = new URLSearchParams({ scope });
+ if (types.length) params.set('type', types.join(','));
+ if (tagFilter.length) params.set('tag', tagFilter.join(','));
+
+ try {
+ const entries = await api('/api/search?' + params.toString());
+ if (!entries || entries.length === 0) {
+ renderError('No entries found for scope "' + scope + '" with those filters.');
+ return;
+ }
+ const md = buildExport(scope, types, tagFilter, metaOnly, entries);
+ $('md').value = md;
+ $('clip').value = md;
+ $('fetched').textContent = entries.length + ' entries exported';
+ $('out').style.display = '';
+ $('out').scrollIntoView({ behavior:'smooth', block:'start' });
+ } catch(e) {
+ renderError('Could not fetch entries: ' + e.message);
+ }
+}
+
+function copyMd() {
+ const cb = $('clip');
+ cb.select(); cb.setSelectionRange(0, cb.value.length);
+ try { document.execCommand('copy'); $('copyBtn').textContent = 'Copied'; setTimeout(()=>$('copyBtn').textContent='Copy', 1400); }
+ catch(e) { $('copyBtn').textContent = 'Copy failed'; setTimeout(()=>$('copyBtn').textContent='Copy', 1400); }
+}
+
+function downloadMd() {
+ const scope = $('scope').value;
+ const name = (scope || 'brain').replace(/[^a-z0-9_-]/gi,'-').toLowerCase() + '-brain-export.md';
+ const blob = new Blob([$('md').value], { type: 'text/markdown;charset=utf-8' });
+ const url = URL.createObjectURL(blob);
+ const a = $('rawHref');
+ a.href = url; a.download = name; a.click();
+ setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+
+$('form').addEventListener('submit', handleSubmit);
+$('copyBtn').addEventListener('click', copyMd);
+$('downloadBtn').addEventListener('click', downloadMd);
+$('base').addEventListener('change', loadScopes);
+
+async function init() {
+ await loadScopes();
+ // Deep link: /ui/export.html?scope=playport pre-selects the scope.
+ const wanted = new URLSearchParams(location.search).get('scope');
+ if (wanted) {
+ const sel = $('scope');
+ for (const opt of sel.options) if (opt.value === wanted) { sel.value = wanted; break; }
+ }
+}
+init();
+</script>
+</body>
+</html>

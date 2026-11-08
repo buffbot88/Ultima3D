@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get the brain - one file, no dependencies</title>
+<style>
+ :root {
+ --bg:#0f172a; --ink:#e2e8f0; --ink-soft:#94a3b8; --line:rgba(255,255,255,.14);
+ --accent:#3b82f6; --accent-2:#1d4ed8;
+ --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+ }
+ * { box-sizing:border-box; }
+ html, body { margin:0; height:100%; }
+ body {
+ background:var(--bg); color:var(--ink); font-size:16px; line-height:1.65;
+ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+ }
+ code, pre { font-family:var(--mono); }
+ a { color:var(--accent); }
+ .wrap { max-width:840px; margin:0 auto; padding:0 24px; }
+
+ .eyebrow { color:var(--ink-soft); font-size:12px; letter-spacing:.14em; text-transform:uppercase; }
+ h1 { font-size:38px; margin:12px 0 0; letter-spacing:-.02em; color:#fff; }
+ h1 .brain-emoji { font-size:34px; }
+ .lede { color:#cbd5e1; font-size:18px; margin:16px 0 0; max-width:60ch; }
+
+ .cta { display:flex; flex-wrap:wrap; gap:12px; margin:30px 0 0; align-items:center; }
+ .btn-dl {
+ display:inline-flex; align-items:center; gap:9px; text-decoration:none;
+ background:var(--accent); color:#fff; font-weight:600; font-size:16px;
+ padding:14px 24px; border-radius:10px; border:1px solid transparent;
+ box-shadow:0 1px 2px rgba(0,0,0,.3);
+ }
+ .btn-dl:hover { background:var(--accent-2); }
+ .btn-dl.ghost {
+ background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.22);
+ font-weight:500; color:var(--ink);
+ }
+ .btn-dl.ghost:hover { background:rgba(255,255,255,.15); color:#fff; }
+ .dl-meta { color:var(--ink-soft); font-size:14px; margin:16px 0 0; }
+
+ h2 {
+ font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft);
+ margin:52px 0 16px; padding-bottom:8px; border-bottom:1px solid var(--line);
+ }
+ h2:first-of-type { margin-top:44px; }
+
+ .panel {
+ background:rgba(255,255,255,.05); border:1px solid var(--line);
+ border-radius:12px; padding:20px 22px;
+ }
+ .panel.accent { border-left:3px solid var(--accent); background:rgba(59,130,246,.12); }
+
+ ol { margin:12px 0 0; padding-left:22px; }
+ ol li { margin-bottom:10px; }
+ ol li b { color:#fff; }
+ .filename {
+ display:inline-block; background:rgba(255,255,255,.1); border:1px solid var(--line);
+ border-radius:6px; padding:1px 7px; font-family:var(--mono); font-size:14px; color:#fff;
+ }
+ i { color:#cbd5e1; }
+
+ pre {
+ background:#020617; color:#e2e8f0; padding:16px 18px; border-radius:12px;
+ overflow-x:auto; font-size:14px; line-height:1.7; margin:14px 0 0;
+ }
+ pre .c { color:#64748b; }
+ pre .p { color:#7dd3fc; }
+
+ table { border-collapse:collapse; width:100%; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+ th, td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--line); vertical-align:top; }
+ th { background:rgba(255,255,255,.06); font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); }
+ tr:last-child td { border-bottom:none; }
+ td:first-child { white-space:nowrap; color:#fff; }
+ td code { font-size:14px; }
+
+ .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+ .feat {
+ background:rgba(255,255,255,.05); border:1px solid var(--line);
+ border-radius:12px; padding:16px 18px;
+ }
+ .feat h4 { margin:0 0 6px; font-size:15px; color:#fff; }
+ .feat p { margin:0; font-size:14px; color:var(--ink-soft); }
+
+ footer {
+ margin-top:64px; padding:24px 0 72px; border-top:1px solid var(--line);
+ color:var(--ink-soft); font-size:14px;
+ }
+ footer a { color:#cbd5e1; }
+ .fine { margin-top:18px; font-size:13px; }
+</style>
+</head>
+<body>
+
+<header>
+ <div class="wrap">
+  <div class="eyebrow">The brain</div>
+  <h1><span class="brain-emoji">🧠</span> One file. Your agents remember.</h1>
+  <p class="lede">
+   Every AI coding agent forgets the same things you had to work out twice. The brain is
+   a plain-folder memory store they all read before work and write to after it. One
+   JavaScript file installs it. No dependencies, no database, no network.
+  </p>
+  <div class="cta">
+   <a class="btn-dl" href="/brain-install.js" download>⬇ Download brain-install.js</a>
+   <a class="btn-dl ghost" href="#how">See how to install</a>
+  </div>
+  <p class="dl-meta" id="dlMeta">Loading the file size...</p>
+ </div>
+</header>
+
+<div class="wrap">
+
+ <h2>What you get</h2>
+ <div class="grid">
+  <div class="feat">
+   <h4>Shared memory</h4>
+   <p>One folder every agent in your project reads and writes. What one learned, the next one knows.</p>
+  </div>
+  <div class="feat">
+   <h4>Plain Markdown</h4>
+   <p>One file per entry. Read it with a text editor, grep it, commit it, diff it. Nothing to lock.</p>
+  </div>
+  <div class="feat">
+   <h4>Outlives compaction</h4>
+   <p>Decisions and gotchas live outside the conversation, so summarising the chat cannot erase them.</p>
+  </div>
+  <div class="feat">
+   <h4>Searchable</h4>
+   <p>Full text across titles, tags and bodies, filtered by project and type, plus an HTTP API.</p>
+  </div>
+  <div class="feat">
+   <h4>A visualizer</h4>
+   <p>A local web UI: every entry as a card, filtered by project. Add and edit without touching a file.</p>
+  </div>
+  <div class="feat">
+   <h4>Health checks</h4>
+   <p><code>brain doctor</code> catches empty titles, unregistered projects and dangling references, and exits non-zero.</p>
+  </div>
+ </div>
+
+ <h2 id="how">Install it</h2>
+ <div class="panel accent">
+  <ol>
+   <li><b>Fastest: hand it to your agent.</b> Drag <span class="filename">brain-install.js</span>
+    into a chat with your AI coding agent and say:
+    <i>"Save this as brain-install.js in my project root and run it."</i>
+    It writes a complete brain, picks a free port, and verifies itself.</li>
+   <li><b>Or run it yourself.</b> Save the file into your project folder, then:
+    <pre><code><span class="p">node</span> brain-install.js
+
+<span class="c"># options</span>
+--to &lt;dir&gt;        install into a different folder
+--name &lt;name&gt;      name this brain (gives it its own port)
+--keep-scope         keep whatever scope your registry already has
+--force              install over an existing brain</code></pre>
+    It refuses to clobber an existing brain without <code>--force</code>, and it never
+    overwrites an existing <code>AGENTS.md</code>. It writes the agent instructions as a
+    separate suggested file instead so you can read them before adopting them.</li>
+   <li><b>Or skip the installer.</b> Copy a whole <code>brain/</code> folder into your project.
+    It works exactly as it ships. The installer just saves you writing the files out.</li>
+  </ol>
+ </div>
+ <p class="dl-meta">Requires Node 18 or newer. That is the entire dependency list.</p>
+
+ <h2>After it installs</h2>
+ <pre><code><span class="c"># find something an agent already worked out</span>
+./brain/brain <span class="p">search</span> "build command"
+
+<span class="c"># write something down so nobody re-derives it</span>
+./brain/brain <span class="p">add</span> --scope myproject --type knowledge \
+  "Build is vite, not webpack" "Run npm run build. Webpack config is a leftover."
+
+<span class="c"># everything about one project, and is the corpus healthy?</span>
+./brain/brain <span class="p">list</span> --scope myproject
+./brain/brain <span class="p">doctor</span>
+
+<span class="c"># browse it, and open a local UI</span>
+./brain/brain <span class="p">serve</span></code></pre>
+ <p class="dl-meta">On Windows use <code>brain\brain.cmd</code>. The launcher finds Node itself,
+ so it works whether or not Node is on your PATH. Every command takes <code>--json</code>.</p>
+
+ <h2>The four entry types</h2>
+ <table>
+  <thead><tr><th>Type</th><th>What goes in it</th></tr></thead>
+  <tbody>
+   <tr><td><code>knowledge</code></td><td>A durable fact, established by evidence. "This API rate-limits at 60/min."</td></tr>
+   <tr><td><code>memory</code></td><td>What happened: a session outcome, current state, an open thread.</td></tr>
+   <tr><td><code>decision</code></td><td>A choice and its reason. The reason is the part nobody can re-derive.</td></tr>
+   <tr><td><code>note</code></td><td>Everything else.</td></tr>
+  </tbody>
+ </table>
+
+ <h2>What it does not do</h2>
+ <div class="panel">
+  <ul style="margin:0; padding-left:22px;">
+   <li>No accounts, no login, no telemetry, no outbound network calls.</li>
+   <li>No database. The files are the source of truth, so <code>git diff</code> shows every change an agent made.</li>
+   <li>No build step, no transpiler, no package install. Node and a folder is the whole thing.</li>
+   <li>No lock-in. Every entry is a Markdown file you can read forever without this tool.</li>
+  </ul>
+ </div>
+
+ <footer>
+  <a href="/">The brain's own documentation →</a>
+  <div class="fine">
+   This page is the sales pitch. The <a href="/">documentation</a> is for people already
+   running a brain, and the <a href="/ui/">visualizer</a> is the working UI.
+  </div>
+ </footer>
+</div>
+
+<script>
+'use strict';
+/* Say how big the download actually is, so nobody has to wonder before clicking.
+ A HEAD request, so the page does not pull the file to display a number. Fails
+ silently: the page is still perfectly usable without the size. */
+(async function () {
+  try {
+    const head = await fetch('/brain-install.js', { method: 'HEAD' });
+    const len = parseInt(head.headers.get('content-length') || '0', 10);
+    if (!len) return;
+    const size = len > 1024 * 1024
+      ? Math.round(len / 1024 / 1024 * 10) / 10 + ' MB'
+      : Math.round(len / 1024) + ' KB';
+    document.getElementById('dlMeta').textContent =
+      'brain-install.js - ' + size + ', one file, no dependencies, no database, no network.';
+  } catch (e) {
+    document.getElementById('dlMeta').textContent =
+      'One file. No dependencies, no database, no network.';
+  }
+})();
+</script>
+</body>
+</html>

@@ -6,3 +6,5 @@ Our Build Plan.md
 __pycache__/
 *.pyc
 /tmp
+/state
+node_modules/

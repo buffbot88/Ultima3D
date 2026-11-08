@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ultima3D Dashboard</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>Ultima3D</h1>
+  <div id="daemon-dot" class="dot off" title="daemon state"></div>
+  <span id="daemon-text">connecting…</span>
+  <nav>
+    <button data-tab="daemon" class="active">Daemon</button>
+    <button data-tab="modules">Modules</button>
+    <button data-tab="skills">Skills</button>
+  </nav>
+</header>
+<main>
+  <section id="tab-daemon" class="tab active">
+    <div class="row">
+      <button id="btn-start">Start</button>
+      <button id="btn-restart">Restart</button>
+      <button id="btn-stop">Stop</button>
+      <button id="btn-output">Open output folder</button>
+      <button id="btn-refresh">Refresh</button>
+    </div>
+    <div id="status-card" class="card"><p>Loading…</p></div>
+  </section>
+  <section id="tab-modules" class="tab">
+    <p class="hint">Flag changes apply when the daemon restarts. Use Restart on the Daemon tab.</p>
+    <div id="module-list"></div>
+  </section>
+  <section id="tab-skills" class="tab">
+    <div class="row">
+      <button id="btn-update-all-dry">Check all (dry run)</button>
+      <button id="btn-update-all-live">Update all (live)</button>
+    </div>
+    <div id="skill-list"></div>
+  </section>
+</main>
+<pre id="log"></pre>
+<script src="app.js"></script>
+</body>
+</html>

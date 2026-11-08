@@ -6,10 +6,15 @@ stdio server uses (so validation and error text match), shares the session budge
 and answers in JSON with image blocks written beside the other outputs.
 
 Routes:
-    GET  /health    liveness + session snapshot
-    GET  /status    session snapshot + registered tool count
-    GET  /tools     tool names and one-line descriptions
+    GET  /health    liveness + session snapshot + busy flag
+    GET  /status    session snapshot + registered tool count + busy flag
+    GET  /tools     tool names and one-line descriptions (disabled modules hidden)
+    GET  /skills    managed-skill registry state
+    GET  /modules   backend-module enable flags (effective after restart)
     POST /call      {"tool": "<name>", "args": {...}} -> the tool's result
+    POST /skills/enable  {"id": ..., "enabled": bool}
+    POST /skills/update  {"id": ...} or {"all": true} (updater; no-op offline)
+    POST /modules   {"module": ..., "enabled": bool} (restart to apply)
     POST /shutdown  stop the daemon (the session is not resumed by a new process)
 """
 
@@ -39,6 +44,15 @@ def _tools() -> list:
     if inspect.isawaitable(tools):
         tools = asyncio.run(tools)
     return list(tools)
+
+
+def _visible_tools() -> list:
+    """Registered tools minus any whose module is disabled in config."""
+    from . import config as _config
+
+    cfg = _config.load()
+    return [tool for tool in _tools()
+            if _config.module_enabled(_tool_module(tool.name), cfg)]
 
 
 def split_address(addr: str) -> tuple[str, int]:
@@ -81,8 +95,45 @@ def payload_of(result: Any, out_dir: Path) -> dict:
     return {"ok": not getattr(result, "isError", False), "result": body}
 
 
+def _tool_module(name: str) -> str:
+    """Which backend module owns a tool (server.py when loaded, prefixes otherwise)."""
+    try:
+        from .server import tool_module  # already imported in every daemon flow
+
+        return tool_module(name)
+    except Exception:
+        if name.startswith("gimp_"):
+            return "gimp"
+        if name.startswith("godot_"):
+            return "godot"
+        return "procedural"
+
+
+def _modules_snapshot() -> dict:
+    """Enable flags plus which modules actually registered tools this boot."""
+    from . import config as _config
+
+    cfg = _config.load()
+    try:
+        from . import server as _server
+
+        loaded = dict(getattr(_server, "MODULES", {}))
+    except Exception:
+        loaded = {}
+    return {"flags": cfg.get("modules", {}), "loaded": loaded,
+            "note": "flag changes apply on daemon restart"}
+
+
 def make_handler(out_dir: Path) -> type[BaseHTTPRequestHandler]:
     """Build a request handler bound to one output directory."""
+    import threading as _threading
+
+    flight = {"count": 0}
+    flight_lock = _threading.Lock()
+
+    def _busy() -> bool:
+        with flight_lock:
+            return flight["count"] > 0
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "Ultima3D-Daemon"
@@ -117,21 +168,30 @@ def make_handler(out_dir: Path) -> type[BaseHTTPRequestHandler]:
             if not self._authorized():
                 return self._deny()
             if self.path == "/health":
-                return self._send(200, {"ok": True, "skill": "ultima3d", "session": SESSION.snapshot()})
+                return self._send(200, {"ok": True, "skill": "ultima3d",
+                                        "session": SESSION.snapshot(), "busy": _busy()})
             if self.path == "/status":
                 return self._send(200, {
                     "ok": True,
                     "session": SESSION.snapshot(),
                     "tools": len(_tools()),
+                    "busy": _busy(),
+                    "modules": _modules_snapshot(),
                 })
             if self.path == "/tools":
                 return self._send(200, {
                     "ok": True,
                     "tools": [
                         {"name": tool.name, "description": (tool.description or "").splitlines()[0]}
-                        for tool in _tools()
+                        for tool in _visible_tools()
                     ],
                 })
+            if self.path == "/skills":
+                from . import skills as _skills
+
+                return self._send(200, _skills.list_skills())
+            if self.path == "/modules":
+                return self._send(200, {"ok": True, **_modules_snapshot()})
             return self._send(404, {"ok": False, "error": f"unknown route {self.path}"})
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib hook
@@ -147,6 +207,36 @@ def make_handler(out_dir: Path) -> type[BaseHTTPRequestHandler]:
                 return self._send(400, {"ok": False, "error": "body must be a JSON object"})
             if self.path == "/call":
                 return self._call(body)
+            if self.path == "/skills/enable":
+                from . import skills as _skills
+
+                ident, enabled = body.get("id"), body.get("enabled", True)
+                if not ident:
+                    return self._send(400, {"ok": False, "error": 'body needs {"id": ..., "enabled": bool}'})
+                return self._send(200, _skills.set_enabled(ident, bool(enabled)))
+            if self.path == "/skills/update":
+                from . import skills as _skills
+
+                if body.get("all"):
+                    return self._send(200, _skills.update_all(
+                        dry_run=bool(body.get("dry_run", True))))
+                ident = body.get("id")
+                if not ident:
+                    return self._send(400, {"ok": False,
+                                           "error": 'body needs {"id": ...} or {"all": true}'})
+                return self._send(200, _skills.update_skill(
+                    ident, dry_run=bool(body.get("dry_run", True))))
+            if self.path == "/modules":
+                from . import config as _config
+
+                mod, enabled = body.get("module"), body.get("enabled", True)
+                if mod not in _config.MODULES:
+                    return self._send(400, {"ok": False,
+                                           "error": f"unknown module {mod!r}; want one of {list(_config.MODULES)}"})
+                cfg = _config.set_flag("modules", mod, bool(enabled))
+                snap = _modules_snapshot()
+                snap["flags"] = cfg.get("modules", {})
+                return self._send(200, {"ok": True, "module": mod, "enabled": bool(enabled), **snap})
             if self.path == "/shutdown":
                 self._send(200, {"ok": True, "stopping": True})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -163,10 +253,22 @@ def make_handler(out_dir: Path) -> type[BaseHTTPRequestHandler]:
             args = body.get("args") or {}
             if not isinstance(args, dict):
                 return self._send(400, {"ok": False, "error": "args must be a JSON object"})
+            from . import config as _config
+
+            module = _tool_module(tool)
+            if not _config.module_enabled(module):
+                return self._send(200, {
+                    "ok": False,
+                    "tool": tool,
+                    "error": f"module {module!r} is disabled (enable it, then restart the daemon)",
+                    "session": SESSION.snapshot(),
+                })
             try:
                 SESSION.check(tool)
             except SessionExpired as exc:
                 return self._send(410, {"ok": False, "error": str(exc), "session": SESSION.snapshot()})
+            with flight_lock:
+                flight["count"] += 1
             try:
                 result = asyncio.run(mcp.call_tool(tool, args))
             except Exception as exc:  # ToolError, UnexpectedToolError, validation
@@ -176,6 +278,9 @@ def make_handler(out_dir: Path) -> type[BaseHTTPRequestHandler]:
                     "error": f"{type(exc).__name__}: {exc}",
                     "session": SESSION.snapshot(),
                 })
+            finally:
+                with flight_lock:
+                    flight["count"] -= 1
             payload = payload_of(result, out_dir)
             payload["tool"] = tool
             payload["session"] = SESSION.snapshot()

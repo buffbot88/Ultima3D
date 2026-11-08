@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brain - the closet where compaction cannot reach</title>
+<style>
+ :root {
+ --bg:#f4f6f9; --panel:#fff; --ink:#1e293b; --ink-soft:#64748b; --line:#e2e8f0;
+ --accent:#2563eb; --accent-soft:#eff6ff;
+ --side-bg:#0f172a; --side-ink:#cbd5e1; --side-active:#1e293b;
+ --radius:12px; --shadow:0 1px 2px rgba(15,23,42,.06), 0 8px 24px rgba(15,23,42,.06);
+ --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
+ }
+ * { box-sizing:border-box; }
+ html, body { margin:0; height:100%; }
+ body {
+ background:var(--bg); color:var(--ink); font-size:15px; line-height:1.6;
+ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+ }
+ code, pre, kbd { font-family:var(--mono); }
+ a { color:var(--accent); }
+ .wrap { max-width:1080px; margin:0 auto; padding:0 24px 80px; }
+
+ header {
+ background:var(--side-bg); color:#fff; padding:52px 0 44px; margin-bottom:36px;
+ }
+ header .wrap { padding-bottom:0; }
+ .eyebrow { color:#94a3b8; font-size:12px; letter-spacing:.14em; text-transform:uppercase; }
+ h1 { font-size:34px; margin:10px 0 0; letter-spacing:-.02em; }
+ h1 .brain-emoji { font-size:30px; }
+ .lede { color:#cbd5e1; font-size:17px; max-width:66ch; margin:14px 0 0; }
+ .lede strong { color:#fff; font-weight:600; }
+
+ .desk-closet {
+ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:32px;
+ }
+ @media (max-width:760px) { .desk-closet { grid-template-columns:1fr; } }
+ .dc {
+ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12);
+ border-radius:var(--radius); padding:16px 18px;
+ }
+ .dc h3 { margin:0 0 6px; font-size:15px; }
+ .dc p { margin:0; color:#cbd5e1; font-size:14px; }
+ .dc.closet { border-color:rgba(147,197,253,.4); background:rgba(37,99,235,.12); }
+
+ h2 {
+ font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft);
+ margin:44px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--line);
+ }
+ h3.sub { font-size:16px; margin:24px 0 8px; letter-spacing:-.01em; }
+ p { max-width:78ch; }
+
+ .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; }
+ .card {
+ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+ padding:18px; box-shadow:var(--shadow); text-decoration:none; color:inherit; display:block;
+ transition:border-color .12s, transform .12s;
+ }
+ .card:hover { border-color:#bfdbfe; transform:translateY(-1px); }
+ .card .k { font-size:12px; color:var(--ink-soft); letter-spacing:.06em; text-transform:uppercase; }
+ .card h4 { margin:6px 0 6px; font-size:16px; color:var(--accent); }
+ .card p { margin:0; font-size:14px; color:var(--ink-soft); }
+
+ table { border-collapse:collapse; width:100%; background:var(--panel);
+ border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
+ th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--line); vertical-align:top; }
+ th { background:#f8fafc; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink-soft); }
+ tr:last-child td { border-bottom:none; }
+ td code { font-size:13px; }
+ td:first-child { white-space:nowrap; }
+
+ pre {
+ background:var(--side-bg); color:#e2e8f0; padding:14px 18px; border-radius:var(--radius);
+ overflow-x:auto; font-size:13px; line-height:1.6; margin:0 0 14px;
+ }
+ pre code { color:inherit; }
+ .copy { position:relative; }
+ .copy button {
+ position:absolute; top:10px; right:10px; background:rgba(255,255,255,.1); color:#cbd5e1;
+ border:1px solid rgba(255,255,255,.15); border-radius:6px; padding:3px 9px; font-size:11px;
+ cursor:pointer; font-family:inherit;
+ }
+ .copy button:hover { background:rgba(255,255,255,.2); color:#fff; }
+
+ .note {
+ background:var(--accent-soft); border:1px solid #bfdbfe; border-left:3px solid var(--accent);
+ border-radius:8px; padding:14px 18px; margin:0 0 18px; font-size:14px;
+ }
+ .note.warn { background:#fffbeb; border-color:#fde68a; border-left-color:#d97706; }
+
+ .rules { counter-reset:r; list-style:none; padding:0; margin:0; }
+ .rules li {
+ counter-increment:r; background:var(--panel); border:1px solid var(--line);
+ border-radius:10px; padding:12px 16px 12px 46px; margin-bottom:8px; position:relative; font-size:14px;
+ }
+ .rules li::before {
+ content:counter(r); position:absolute; left:14px; top:12px; width:20px; height:20px;
+ background:var(--accent); color:#fff; border-radius:50%; font-size:11px; font-weight:700;
+ display:flex; align-items:center; justify-content:center;
+ }
+ .rules li b { color:var(--ink); }
+ .rules li span { color:var(--ink-soft); }
+
+ footer { margin-top:56px; padding-top:20px; border-top:1px solid var(--line);
+ color:var(--ink-soft); font-size:13px; }
+ .status { display:inline-flex; align-items:center; gap:7px; font-size:13px; color:var(--ink-soft); }
+ .dot { width:8px; height:8px; border-radius:50%; background:#22c55e; }
+ .dot.err { background:#ef4134; }
+</style>
+</head>
+<body>
+
+<header>
+ <div class="wrap">
+  <div class="eyebrow" id="brainName">a storage closet for agents</div>
+  <h1><span class="brain-emoji">🧠</span> The brain</h1>
+  <p class="lede">
+   Your project folder is the <strong>desk</strong>: what you are working on right now,
+   and what a compaction is allowed to summarise away. The brain is the
+   <strong>storage closet</strong> behind it: durable facts, decisions and gotchas that
+   outlive the conversation, written down once so nobody has to work them out twice.
+  </p>
+  <div class="desk-closet">
+   <div class="dc">
+    <h3>📄 The desk</h3>
+    <p>Source code, config, build output, anything the shipped product needs. Compacted freely.</p>
+   </div>
+   <div class="dc closet">
+    <h3>🧠 The closet</h3>
+    <p>What was learned, what was decided and why, what bit us. Not in the code, so nothing summarises it away.</p>
+   </div>
+  </div>
+ </div>
+</header>
+
+<div class="wrap">
+
+ <div class="note" id="liveNote">
+  Connecting to the brain server… if this stays, start it with <code>./brain/brain serve</code>.
+ </div>
+
+ <h2>Start here</h2>
+ <div class="cards">
+  <a class="card" href="/ui/">
+   <div class="k">Browse</div>
+   <h4>Visualizer →</h4>
+   <p>Every entry as a card. Filter by project, type or tag. Add and edit without touching a file.</p>
+  </a>
+  <a class="card" href="/api-docs">
+   <div class="k">Reference</div>
+   <h4>API →</h4>
+   <p>Every route this server answers, with a link that runs it.</p>
+  </a>
+  <a class="card" href="INDEX.md" id="catalogue">
+   <div class="k">Catalogue</div>
+   <h4>INDEX.md →</h4>
+   <p>The whole brain as one readable page: every project, every entry, every tag with a count.</p>
+  </a>
+  <a class="card" href="RULES.md" id="rulesDoc">
+   <div class="k">Conventions</div>
+   <h4>House rules →</h4>
+   <p>The rules that keep it readable, and the mistake each one exists to prevent.</p>
+  </a>
+ </div>
+
+ <h2>The four commands that matter</h2>
+ <div class="copy">
+  <pre><code>./brain/brain search "build command"        <span style="color:#64748b"># find something</span>
+./brain/brain add --scope myproject --type knowledge "Title" "Body"
+./brain/brain list --scope myproject         <span style="color:#64748b"># everything about a project</span>
+./brain/brain doctor                         <span style="color:#64748b"># is this brain healthy?</span></code></pre>
+ </div>
+ <p>
+  On Windows use <code>brain\brain.cmd</code> instead. The launcher finds Node by itself,
+  so it works whether or not Node is on your PATH. Every command takes <code>--json</code>
+  if something else is reading the output.
+ </p>
+
+ <h2>Every command</h2>
+ <table>
+  <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+  <tbody>
+   <tr><td><code>add</code></td><td>Write an entry. <code>--title --body --type --tags --scope --source</code>. <code>--body @file</code> reads a long body from a file, which is far easier than escaping quotes in a shell.</td></tr>
+   <tr><td><code>search</code></td><td>Full text across title, tags and body. Combine with <code>--tag</code>, <code>--type</code>, <code>--scope</code>.</td></tr>
+   <tr><td><code>list</code></td><td>Everything, newest first. Same filters, plus <code>--limit N</code>.</td></tr>
+   <tr><td><code>get</code></td><td>One entry in full.</td></tr>
+   <tr><td><code>update</code></td><td>Change any field of an entry. Use this instead of writing a near-duplicate.</td></tr>
+   <tr><td><code>delete</code></td><td>Remove an entry.</td></tr>
+   <tr><td><code>tags</code></td><td>Every tag in use, with counts. Check here before inventing one.</td></tr>
+   <tr><td><code>scopes</code></td><td>The project registry, with entry counts.</td></tr>
+   <tr><td><code>index</code></td><td>Rebuild <code>INDEX.md</code> and <code>index.json</code>. <code>--dry</code> to see what it would write.</td></tr>
+   <tr><td><code>doctor</code></td><td>Check the corpus. Exits non-zero when something is actually wrong.</td></tr>
+   <tr><td><code>serve</code></td><td>Start the HTTP API and this site. <code>--port</code> to move it.</td></tr>
+   <tr><td><code>info</code></td><td>Where this brain lives, its name and its port.</td></tr>
+  </tbody>
+ </table>
+
+ <h2>What lives where</h2>
+ <table>
+  <thead><tr><th>Path</th><th>What it is</th></tr></thead>
+  <tbody>
+   <tr><td><code>entries/</code></td><td>One Markdown file per entry, with a frontmatter block. This is the source of truth. Hand-editable.</td></tr>
+   <tr><td><code>lib/vocab.js</code></td><td><strong>The project registry.</strong> Add a project here and run <code>index</code>. This is the only place to register one.</td></tr>
+   <tr><td><code>lib/store.js</code></td><td>Reads and writes entries. Atomic writes, so two agents never corrupt one.</td></tr>
+   <tr><td><code>lib/index.js</code></td><td>Builds the catalogue.</td></tr>
+   <tr><td><code>lib/doctor.js</code></td><td>The health checks.</td></tr>
+   <tr><td><code>lib/config.js</code></td><td>This brain's own port and name, so several brains can run at once.</td></tr>
+   <tr><td><code>ui/</code></td><td>This homepage, the visualizer and the export page.</td></tr>
+   <tr><td><code>tools/</code></td><td><code>normalise.js</code> tidies old entries (dry run by default) and <code>test-normalise.js</code> tests its rules.</td></tr>
+   <tr><td><code>templates/</code></td><td>Entry templates. They are not entries and do not appear in search.</td></tr>
+   <tr><td><code>INDEX.md</code>, <code>index.json</code></td><td>Generated. Read them, never edit them; <code>brain index</code> rewrites both.</td></tr>
+  </tbody>
+ </table>
+
+ <h2>Types</h2>
+ <p>Four, and the choice matters because it is how a reader decides whether to trust a line.</p>
+ <table>
+  <thead><tr><th>Type</th><th>Means</th></tr></thead>
+  <tbody>
+   <tr><td><code>knowledge</code></td><td>A durable fact, established by evidence.</td></tr>
+   <tr><td><code>memory</code></td><td>What happened: a session outcome, current state, an open thread.</td></tr>
+   <tr><td><code>decision</code></td><td>A choice, with the reason. The reason is the part nobody can re-derive.</td></tr>
+   <tr><td><code>note</code></td><td>Everything else.</td></tr>
+  </tbody>
+ </table>
+
+ <h2>When an agent should write here</h2>
+ <div class="note">
+  Read the brain <strong>before</strong> starting work on a project, and write to it
+  <strong>after</strong> learning something. The test is simple: if a future session
+  would have to rediscover this, it belongs in the closet. If the product needs it at
+  runtime, it belongs on the desk.
+ </div>
+
+ <h2>The house rules</h2>
+ <p>The short list. Each of these exists because it was broken once, not because it reads well.</p>
+ <ol class="rules">
+  <li><b>Every entry has a frontmatter block.</b> <span>An entry without one is indexed silently, with no title and no tags, which makes it invisible to everything.</span></li>
+  <li><b>A title is a name, not a sentence.</b> <span>Keep it under about 90 characters and put the detail in the body.</span></li>
+  <li><b>Register a project before filing anything under it.</b> <span>Add it to <code>lib/vocab.js</code> and run <code>index</code>, or its entries render with no name or colour.</span></li>
+  <li><b><code>global</code> means workspace-wide.</b> <span>Project facts go under the project, even the internal ones.</span></li>
+  <li><b>An entry carries its own scope as a tag.</b> <span>So <code>--scope</code> and <code>--tag</code> agree.</span></li>
+  <li><b>Reuse a tag before inventing one.</b> <span>A tag used once is a detail, not navigation.</span></li>
+  <li><b>Plain hyphens, never long dashes.</b> <span>No em or en dashes anywhere. It reads better and it is a house rule.</span></li>
+  <li><b>Templates live in <code>templates/</code>.</b> <span>Anything in <code>entries/</code> is an entry, and will show up as one.</span></li>
+  <li><b>Update before you duplicate.</b> <span>Two entries that disagree are worse than one that is vague.</span></li>
+  <li><b>Never overwrite another agent's entry.</b> <span>Read, merge, write. Several agents share this folder.</span></li>
+  <li><b>Run <code>doctor</code> before you trust it.</b> <span>It catches what you cannot see by reading: empty titles, unregistered scopes, dangling references.</span></li>
+  <li><b>Generated files are not yours to edit.</b> <span>INDEX.md and index.json are built by brain index; never hand-edit them or the next rebuild silently destroys your changes.</span></li>
+  <li><b>Em dashes and en dashes prohibited.</b> <span>No U+2014, U+2013, or dash-like characters (~, ~~, - used as substitute). Use `node -e "process.stdout.write('—'.charCodeAt(0))"` to check. `normalise` will fix them, but it is easier not to type them.</span></li>  <li><b>Keep secrets out, keep their locations in.</b> <span>Where a key lives, yes. The key itself, no. Entries are copied into exports, zips and other people's machines. Never commit secrets or platform tokens.</span></li>
+  <li><b>Record a decision with its reason.</b> <span>A decision entry says what was chosen and why the alternative lost. The reason is the part nobody can re-derive. Six months later someone will ask why, and "because it seemed right" is not an answer.</span></li>
+<li><b>Total detail wipe resets the brain.</b> <span>`./brain/brain reindex --wipe` clears `entries/`, `index.json`, `INDEX.md`, and all generated reports, leaving only `lib/vocab.js`, `lib/config.js`, and the `entries/` folder structure. No entries, no scope registry, no tags — a clean slate for a fresh brain.</span></li>
+ </ol>
+ <p><a href="RULES.md">The full rules, with the reason behind each one →</a></p>
+
+<h3>Quick reference</h3>
+<p><strong>15 rules, the essentials:</strong></p>
+<ul class="short-rules">
+  <li><b>Frontmatter block.</b> Every entry needs <code>---</code> block with <code>id</code>, <code>type</code>, <code>title</code>, <code>scope</code>.</li>
+  <li><b>Title as name.</b> Keep under 90 characters; detail in body.</li>
+  <li><b>Register project.</b> Add to <code>lib/vocab.js</code>, then run <code>index</code>.</li>
+  <li><b>global = workspace.</b> Project facts under project scope, not global.</li>
+  <li><b>Scope as tag.</b> Entry's scope must also be in its tags.</li>
+  <li><b>Reuse tags.</b> Check existing before inventing new; prevents vocabulary bloat.</li>
+  <li><b>Plain hyphens only.</b> No em dashes (—), en dashes (–), or dash substitutes.</li>
+  <li><b>Templates in templates/.</b> Never in <code>entries/</code> or they become phantom entries.</li>
+  <li><b>Update before duplicate.</b> Use <code>update</code> rather than creating near-duplicates.</li>
+  <li><b>No overwrite.</b> Read, merge, write. Several agents share this folder.</li>
+  <li><b>Run doctor.</b> Catches empty titles, unregistered scopes, dangling refs.</li>
+  <li><b>No em dashes.</b> Explicitly prohibited; check with char code test.</li>
+  <li><b>Total detail wipe.</b> `brain reindex --wipe` resets to zero for fresh start.</li>
+</ul>
+<p><a href="RULES.md">Read the full rules with incidents →</a></p>
+
+ <h2>HTTP API</h2>
+ <p>For other tools and webviews. CORS is open and it binds to localhost only.</p>
+ <table>
+  <thead><tr><th>Route</th><th>Purpose</th></tr></thead>
+  <tbody>
+   <tr><td><code>GET /api/index</code></td><td>Everything in one object: counts, projects, tag frequencies, every entry. Add <code>?entries=0</code> for just the shape.</td></tr>
+   <tr><td><code>GET /api/scopes</code></td><td>The project registry, for building a picker.</td></tr>
+   <tr><td><code>GET /api/entries</code></td><td>List, filtered by <code>type</code>, <code>tag</code>, <code>scope</code>.</td></tr>
+   <tr><td><code>GET /api/entries/:id</code></td><td>One entry.</td></tr>
+   <tr><td><code>POST /api/entries</code></td><td>Create.</td></tr>
+   <tr><td><code>PATCH /api/entries/:id</code></td><td>Update.</td></tr>
+   <tr><td><code>DELETE /api/entries/:id</code></td><td>Delete.</td></tr>
+   <tr><td><code>GET /api/search</code></td><td>Search.</td></tr>
+   <tr><td><code>GET /api/tags</code></td><td>Every tag with a count.</td></tr>
+  </tbody>
+ </table>
+
+ <footer>
+  <span class="status"><span class="dot" id="dot"></span><span id="status">checking…</span></span>
+  <br>Plain text, one file per entry, no database. Everything here is in <code>entries/</code> and can be read with any tool that opens Markdown.
+ </footer>
+</div>
+
+<script>
+'use strict';
+/* The homepage degrades rather than breaks: opened as a file, or with the server
+ down, the links and the explanations still work. Only the live numbers need it. */
+(async function () {
+  const $ = (id) => document.getElementById(id);
+  try {
+    const r = await fetch('/api/index?entries=0');
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    $('dot').className = 'dot';
+    $('status').textContent = j.counts.entries + ' entries across ' +
+      Object.keys(j.counts.scopes).length + ' projects, ' + j.counts.tags + ' tags';
+    $('liveNote').innerHTML = 'This brain holds <strong>' + j.counts.entries +
+      ' entries</strong> across <strong>' + Object.keys(j.counts.scopes).length +
+      ' projects</strong> and <strong>' + j.counts.tags + ' tags</strong>. ' +
+      'Newest first in the <a href="/ui/">visualizer</a>.';
+  } catch (e) {
+    $('dot').className = 'dot err';
+    $('status').textContent = 'server not running';
+    $('liveNote').className = 'note warn';
+    $('liveNote').innerHTML = 'The server is not running, so the counts above are empty. ' +
+      'Start it with <code>./brain/brain serve</code> (or <code>brain\\brain.cmd serve</code> on Windows), ' +
+      'then reload this page. Everything on this page works without it except the live numbers.';
+  }
+  // The brain's own name, so several brains on one machine are told apart.
+  try {
+    const r = await fetch('/api/scopes');
+    if (r.ok) {
+      const j = await r.json();
+      document.title = 'Brain - the closet where compaction cannot reach';
+    }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>

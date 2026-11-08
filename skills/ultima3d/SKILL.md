@@ -4,7 +4,7 @@ description: Builds, renders, inspects, refines, validates and exports game-read
 license: MIT
 compatibility: Requires this repo on the user's own machine, Blender 5.2 installed, and Python 3.10+ with mcp and httpx. Serves 127.0.0.1 only; cannot run in a cloud workspace.
 metadata:
-  version: "10"
+  version: "11"
 ---
 
 # Ultima3D — agentic 3D asset work on this machine
@@ -16,10 +16,14 @@ judgement; the tools own mechanics and numbers.
 
 ## 0. Where this runs — read first
 
-Every command below must run on the **user's own computer**, in the repo root (the folder holding
-`ultima3d/`, `blender/worker.py` and `skills/`). The server launches a local Blender and talks to
+Every command below must run on the **user's own computer**. The server launches a local Blender and talks to
 `127.0.0.1`; a cloud workspace has neither the Blender install nor the user's editor, so tool calls
 there will fail. If you are not on the user's machine, say so instead of improvising.
+
+Run from the **user's project directory** (the game/project you are working on), not from the
+Ultima3D checkout. All renders, exports and logs land in `<your-project>/output` (or
+`$ULTIMA3D_OUT` when set) — never inside Ultima3D's own code. Ultima3D is a shared module;
+keep its checkout clean.
 
 Check before promising anything:
 
@@ -152,7 +156,7 @@ means the boundary does not close.
 | Symptom | Fix |
 |---|---|
 | `blender not found at ...` | Set `ULTIMA3D_BLENDER` to `blender.exe`, or install Blender 5.2 |
-| `daemon unreachable` | `python -m ultima3d.skill status`; the daemon log is `output/daemon.log` |
+| `daemon unreachable` | `python -m ultima3d.skill status`; the daemon log is `<your-project>/output/daemon.log` |
 | Live tools time out | Open Blender, enable the `blender/addon.py` addon, Start MCP Server (port 9876) |
 | `session budget exhausted` | The 40-minute cap is spent: report and stop; a restart needs the user's go-ahead |
 | Render paths but no judgement | Actually open the PNGs; never claim a look you did not see |

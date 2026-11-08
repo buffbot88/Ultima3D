@@ -65,23 +65,44 @@ def request(path: str, body: dict | None = None, addr: str | None = None,
         return 0, {"ok": False, "error": f"daemon unreachable at {url}: {reason}"}
 
 
-def ensure_daemon(addr: str | None = None) -> dict:
-    """Return health of the running daemon, starting one when none answers."""
+NO_DASHBOARD_ENV = "ULTIMA3D_NO_DASHBOARD"
+
+
+def dashboard_suppressed(args: argparse.Namespace | None = None) -> bool:
+    """True when the dashboard must not pop up (headless/tests opt out)."""
+    if os.environ.get(NO_DASHBOARD_ENV) == "1":
+        return True
+    return bool(args is not None and getattr(args, "no_dashboard", False))
+
+
+def ensure_daemon(addr: str | None = None, no_dashboard: bool = False) -> dict:
+    """Return health of the running daemon, starting one when none answers.
+
+    A fresh boot also pops up the Electron dashboard (it attaches by itself),
+    unless no_dashboard or ULTIMA3D_NO_DASHBOARD=1. Already-running daemons
+    are returned untouched — the window only opens on bootup.
+    """
     target = addr or daemon_addr()
     code, body = request("/health", addr=target, timeout=5)
     if code == 200:
         return body
-    log = out_dir() / "daemon.log"
+    project_out = out_dir()
+    log = project_out / "daemon.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     flags = 0
     if os.name == "nt":
         flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess,
                                                                      "CREATE_NEW_PROCESS_GROUP", 0)
+    # The daemon runs with cwd=ROOT (so it finds blender/worker.py), but its
+    # outputs must land in the *invoker's* project, not the Ultima3D checkout.
+    # Forward the resolved output dir explicitly; an explicit ULTIMA3D_OUT wins.
+    child_env = dict(os.environ)
+    child_env.setdefault("ULTIMA3D_OUT", str(project_out))
     with open(log, "ab", buffering=0) as handle:
         proc = subprocess.Popen(
             [sys.executable, "-m", "ultima3d.server", "--http", target],
             cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=handle, stderr=handle,
-            creationflags=flags,
+            creationflags=flags, env=child_env,
         )
     deadline = time.monotonic() + START_TIMEOUT
     while time.monotonic() < deadline:
@@ -91,6 +112,11 @@ def ensure_daemon(addr: str | None = None) -> dict:
         code, body = request("/health", addr=target, timeout=5)
         if code == 200:
             body["started_pid"] = proc.pid
+            if not no_dashboard and os.environ.get(NO_DASHBOARD_ENV) != "1":
+                try:
+                    body["dashboard"] = launch_dashboard()
+                except Exception as exc:  # GUI must never break daemon boot
+                    body["dashboard"] = {"ok": False, "error": str(exc)}
             return body
         time.sleep(0.5)
     proc.terminate()
@@ -111,7 +137,7 @@ def args_payload(raw: str | None, args_file: str | None) -> dict:
 
 
 def cmd_call(args: argparse.Namespace) -> int:
-    ensure_daemon(args.addr)
+    ensure_daemon(args.addr, no_dashboard=dashboard_suppressed(args))
     payload = args_payload(args.args, args.args_file)
     code, body = request("/call", {"tool": args.tool, "args": payload}, addr=args.addr)
     print(json.dumps(body, indent=2, default=str))
@@ -119,7 +145,7 @@ def cmd_call(args: argparse.Namespace) -> int:
 
 
 def cmd_tools(args: argparse.Namespace) -> int:
-    ensure_daemon(args.addr)
+    ensure_daemon(args.addr, no_dashboard=dashboard_suppressed(args))
     code, body = request("/tools", addr=args.addr, timeout=30)
     if code != 200:
         print(json.dumps(body, indent=2), file=sys.stderr)
@@ -147,9 +173,82 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def launch_dashboard() -> dict:
+    """Open the Electron dashboard (detached); it attaches to the running daemon."""
+    dash = ROOT / "dashboard"
+    if not dash.is_dir():
+        return {"ok": False, "error": f"dashboard missing: {dash}"}
+    npm = shutil.which("npm")
+    if npm is None:
+        return {"ok": False,
+                "error": "npm not found on PATH; install Node 18+ to run the dashboard"}
+    flags = 0
+    extra: dict = {}
+    if os.name == "nt":
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        extra["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(
+            [npm, "start"], cwd=str(dash), stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            creationflags=flags, **extra)
+    except OSError as exc:
+        return {"ok": False, "error": f"could not start dashboard: {exc}"}
+    return {"ok": True, "pid": proc.pid,
+            "note": "dashboard window opening; it attaches to the daemon by itself"}
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    print(json.dumps(launch_dashboard(), indent=2))
+    return 0
+
+
 def cmd_start(args: argparse.Namespace) -> int:
-    body = ensure_daemon(args.addr)
+    body = ensure_daemon(args.addr, no_dashboard=dashboard_suppressed(args))
     print(json.dumps(body, indent=2))
+    return 0
+
+
+def cmd_skills(args: argparse.Namespace) -> int:
+    from . import skills as _skills
+
+    body = _skills.list_skills()
+    print(json.dumps(body, indent=2))
+    return 0 if body.get("ok") else 1
+
+
+def cmd_skill_update(args: argparse.Namespace) -> int:
+    from . import skills as _skills
+
+    dry_run = not args.live
+    if args.all:
+        body = _skills.update_all(dry_run=dry_run)
+    else:
+        body = _skills.update_skill(args.id, dry_run=dry_run)
+    print(json.dumps(body, indent=2, default=str))
+    return 0 if body.get("ok") else 1
+
+
+def cmd_modules(args: argparse.Namespace) -> int:
+    from . import config as _config
+
+    if args.enable:
+        for mod in args.enable:
+            if mod not in _config.MODULES:
+                print(json.dumps({"ok": False, "error": f"unknown module {mod!r}"}, indent=2))
+                return 1
+            _config.set_flag("modules", mod, True)
+    if args.disable:
+        for mod in args.disable:
+            if mod not in _config.MODULES:
+                print(json.dumps({"ok": False, "error": f"unknown module {mod!r}"}, indent=2))
+                return 1
+            _config.set_flag("modules", mod, False)
+    cfg = _config.load()
+    print(json.dumps({"ok": True, "modules": cfg.get("modules", {}),
+                       "note": "restart the daemon to apply flag changes"}, indent=2))
     return 0
 
 
@@ -175,6 +274,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Drive the local Ultima3D tool surface from a shell or a Freebuff skill.",
     )
     parser.add_argument("--addr", default=None, help=f"daemon address (default {DEFAULT_ADDR})")
+    parser.add_argument("--no-dashboard", action="store_true",
+                        help="don't pop up the Electron dashboard on daemon boot "
+                             "(also: ULTIMA3D_NO_DASHBOARD=1)")
     subs = parser.add_subparsers(dest="command", required=True)
 
     call = subs.add_parser("call", help="call one tool with JSON arguments")
@@ -186,11 +288,27 @@ def build_parser() -> argparse.ArgumentParser:
     subs.add_parser("tools", help="list registered tools").set_defaults(func=cmd_tools)
     subs.add_parser("status", help="daemon + session status").set_defaults(func=cmd_status)
     subs.add_parser("stop", help="stop the daemon and its Blender worker").set_defaults(func=cmd_stop)
-    subs.add_parser("start", help="start the daemon in the background").set_defaults(func=cmd_start)
+    start = subs.add_parser("start", help="start the daemon in the background (+ dashboard)")
+    start.set_defaults(func=cmd_start)
+    subs.add_parser("dashboard", help="pop up the Electron dashboard (attaches to the daemon)").set_defaults(func=cmd_dashboard)
 
     install = subs.add_parser("install", help="copy the skill into ~/.agents/skills")
     install.add_argument("--dir", default=None, help="override the skills directory")
     install.set_defaults(func=cmd_install)
+
+    subs.add_parser("skills", help="list managed skills and their state").set_defaults(func=cmd_skills)
+
+    update = subs.add_parser("skill-update", help="update a managed skill from its source")
+    update.add_argument("id", nargs="?", default=None, help="skill id (omit with --all)")
+    update.add_argument("--all", action="store_true", help="update every skill")
+    update.add_argument("--live", action="store_true",
+                        help="actually fetch (default is a dry run that changes nothing)")
+    update.set_defaults(func=cmd_skill_update)
+
+    modules = subs.add_parser("modules", help="show or flip backend-module flags")
+    modules.add_argument("--enable", nargs="*", default=None, help="module(s) to enable")
+    modules.add_argument("--disable", nargs="*", default=None, help="module(s) to disable")
+    modules.set_defaults(func=cmd_modules)
     return parser
 
 

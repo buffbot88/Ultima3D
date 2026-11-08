@@ -40,7 +40,9 @@ POLL_SECS = 5.0
 BUSY_CPU_PCT = 5.0
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT_DIR = Path(os.environ.get("ULTIMA3D_OUT", ROOT / "output"))
+# Headless fallback tray: default outputs to the invoking project (cwd), not
+# the Ultima3D checkout, so shared-module use never mixes renders into Ultima3D's code.
+OUT_DIR = Path(os.environ.get("ULTIMA3D_OUT", Path.cwd() / "output"))
 LOG_FILE = OUT_DIR / "tray.log"
 
 

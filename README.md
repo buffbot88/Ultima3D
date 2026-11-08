@@ -32,10 +32,17 @@ resolution; finalize exports baked PBR textures instead of white
 procedurals (verified by bake_export_test) with an opt-out material merge;
 new text signage builder; new foliage_cluster and stone_kerb builders with a
 foliage spec and colour diagnostic under docs/.
-v10 (this tree) — five new builders for the Clover Village set: flower_bed
+v10 — five new builders for the Clover Village set: flower_bed
 (domed soil, clover, rosettes, colour-grouped blooms), courier_statue (seated
 rabbit-courier focal piece), bench, lantern_post, and the stone_kerb ring
 builder; SKILL.md documents all 36 builders.
+v11 (this tree) — Ultima3D is now a skill-hosting platform: skills/registry.json
+manages ultima3d, ponytail, pullstack (both vendored as sparse git checkouts)
+and a brain slot awaiting its starter kit, with a Python updater
+(`python -m ultima3d.skill skill-update [--all]`); state/config.json toggles
+the procedural/live/gimp/godot modules via the daemon or CLI; the Electron
+dashboard/ app (npm start) shows daemon status, module toggles, skill
+enable/update, and a tray icon — green idle, orange busy.
 
 ```text
 LLM (MCP client — or a Freebuff skill driving the loopback daemon)
@@ -456,7 +463,8 @@ cargo run -p ultima3d-tray             # tray icon owning the server
 
 See `rust/BUILD.md` for the Windows linker setup (llvm-mingw, no VS needed).
 
-Config (env): `ULTIMA3D_BLENDER` (Blender executable), `ULTIMA3D_OUT` (output dir),
+Config (env): `ULTIMA3D_BLENDER` (Blender executable), `ULTIMA3D_OUT` (output dir —
+defaults to `./output` under your invoking project directory, never the checkout),
 `ULTIMA3D_WORKER` (worker script, default `blender/worker.py`),
 `ULTIMA3D_SERVER` (server binary for the tray to own),
 `ULTIMA3D_CALL_TIMEOUT` (per-call worker deadline in seconds, default 600 — a hung

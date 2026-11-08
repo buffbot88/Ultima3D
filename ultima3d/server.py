@@ -8,7 +8,10 @@ Backends degrade gracefully offline.
 Config via env:
     ULTIMA3D_BLENDER   path to blender executable
                       (default: C:\\Program Files\\Blender Foundation\\Blender 5.2\\blender.exe)
-    ULTIMA3D_OUT       output directory for renders/exports (default: ./output)
+    ULTIMA3D_OUT       output directory for renders/exports
+                      (default: ./output under the directory you invoked from —
+                      your project — never the Ultima3D checkout; the skill CLI
+                      and dashboard forward this to the daemon explicitly)
     ULTIMA3D_CALL_TIMEOUT
                       per-call deadline in seconds for worker responses
                       (default: 600); a hung worker is killed past it
@@ -48,10 +51,69 @@ if __package__ in (None, ""):
 from .registry import mcp
 from .session import SESSION, SessionExpired
 
-# Side-effect imports: register live-Blender + Godot + GIMP tools on the same server.
-from .live import server as _live_server  # noqa: F401
-from .godot import tools as _godot_tools  # noqa: F401
-from .gimp import tools as _gimp_tools  # noqa: F401
+# Side-effect imports: register live-Blender + Godot + GIMP tools on the same
+# server. Each module is gated by state/config.json (see ultima3d.config),
+# so the dashboard can disable a backend without touching this file.
+from . import config as _uci_config
+
+MODULES: dict[str, bool] = {}
+
+
+def _load_modules() -> dict[str, bool]:
+    """Import enabled backend modules; each registers its tools on import."""
+    global MODULES
+    cfg = _uci_config.load()
+    loaded: dict[str, bool] = {}
+    if _uci_config.module_enabled("live", cfg):
+        from .live import server as _live_server  # noqa: F401
+        loaded["live"] = True
+    else:
+        loaded["live"] = False
+    if _uci_config.module_enabled("godot", cfg):
+        from .godot import tools as _godot_tools  # noqa: F401
+        loaded["godot"] = True
+    else:
+        loaded["godot"] = False
+    if _uci_config.module_enabled("gimp", cfg):
+        from .gimp import tools as _gimp_tools  # noqa: F401
+        loaded["gimp"] = True
+    else:
+        loaded["gimp"] = False
+    loaded["procedural"] = _uci_config.module_enabled("procedural", cfg)
+    MODULES = loaded
+    return loaded
+
+
+_load_modules()
+
+# Tool-name -> module map, used by the daemon to refuse calls into a disabled
+# module and to hide them from /tools. Prefix rules cover gimp_/godot_; the
+# live names are enumerated (tests assert the map covers every tool).
+LIVE_TOOLS = frozenset({
+    "get_addon_status", "disable_telemetry", "get_scene_info", "get_object_info",
+    "get_viewport_screenshot", "execute_blender_code", "describe_node_type",
+    "bpy_api_lookup", "get_polyhaven_categories", "search_polyhaven_assets",
+    "get_polyhaven_asset_preview", "download_polyhaven_asset", "set_texture",
+    "get_polyhaven_status", "get_hyper3d_status", "get_sketchfab_status",
+    "search_sketchfab_models", "get_sketchfab_model_preview",
+    "download_sketchfab_model", "get_polypizza_status", "search_polypizza_models",
+    "download_polypizza_model", "generate_hyper3d_model_via_text",
+    "generate_hyper3d_model_via_images", "poll_rodin_job_status",
+    "import_generated_asset", "get_hunyuan3d_status", "generate_hunyuan3d_model",
+    "poll_hunyuan_job_status", "import_generated_asset_hunyuan", "export_scene",
+    "record_trajectory_feedback",
+})
+
+
+def tool_module(name: str) -> str:
+    """Which backend module owns a tool name."""
+    if name.startswith("gimp_"):
+        return "gimp"
+    if name.startswith("godot_"):
+        return "godot"
+    if name in LIVE_TOOLS:
+        return "live"
+    return "procedural"
 
 _HERE = Path(__file__).resolve().parent
 # v0.6 moved the geometry worker to blender/worker.py; it still runs inside Blender.
@@ -538,6 +600,9 @@ def cli():
                         help="run the loopback JSON daemon instead of stdio MCP")
     parser.add_argument("--session-minutes", type=float, default=None,
                         help=f"session cap in minutes (default {SESSION.limit_minutes:g})")
+    parser.add_argument("--no-dashboard", action="store_true",
+                        help="don't pop up the Electron dashboard on boot "
+                             "(also: ULTIMA3D_NO_DASHBOARD=1)")
     args, unknown = parser.parse_known_args()
     if unknown:
         print(f"ignoring unrecognized arguments: {unknown}", file=sys.stderr)
@@ -548,6 +613,16 @@ def cli():
     if args.http:
         from .daemon import serve
 
+        # Booting Ultima3D pops up the dashboard (it attaches by itself);
+        # headless/test use passes --no-dashboard or ULTIMA3D_NO_DASHBOARD=1.
+        if not args.no_dashboard and os.environ.get("ULTIMA3D_NO_DASHBOARD") != "1":
+            try:
+                from .skill import launch_dashboard
+
+                print(json.dumps({"dashboard": launch_dashboard()}), flush=True)
+            except Exception as exc:  # GUI must never break daemon boot
+                print(json.dumps({"dashboard": {"ok": False, "error": str(exc)}}),
+                      flush=True)
         try:
             serve(args.http)
         except ValueError as exc:

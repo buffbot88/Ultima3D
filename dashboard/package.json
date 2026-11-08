@@ -1,0 +1,15 @@
+{
+  "name": "ultima3d-dashboard",
+  "version": "11.0.0",
+  "description": "Ultima3D control dashboard: modules, managed skills, daemon lifecycle, system tray.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "author": "Ultima3D",
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "electron": "^45.2.3"
+  }
+}

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# brain launcher (bash / Git Bash) - finds node in .runtime/ or PATH and runs cli.js
+set -e
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$DIR/.." && pwd)"
+
+NODE=""
+for cand in "$ROOT"/.runtime/node-*/node.exe; do
+  if [ -x "$cand" ]; then NODE="$cand"; break; fi
+done
+if [ -z "$NODE" ] && command -v node >/dev/null 2>&1; then
+  NODE="$(command -v node)"
+fi
+if [ -z "$NODE" ]; then
+  echo "brain: no node found (looked in .runtime/node-*/ and PATH)" >&2
+  exit 1
+fi
+
+exec "$NODE" "$DIR/cli.js" "$@"

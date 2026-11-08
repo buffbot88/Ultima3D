@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "id": "ultima3d",
+      "kind": "local",
+      "source": "skills/ultima3d",
+      "license": "proprietary",
+      "description": "Ultima3D asset compiler: procedural Blender builds, live GUI, Godot, GIMP.",
+      "enabled": true,
+      "installed": true,
+      "pin": "v10.0.0"
+    },
+    {
+      "id": "ponytail",
+      "kind": "git",
+      "source": "https://github.com/DietrichGebert/ponytail",
+      "paths": [
+        "skills/ponytail",
+        "commands",
+        "AGENTS.md"
+      ],
+      "license": "MIT",
+      "description": "Agent coding discipline: reuse first, smallest change that works, review like on-call.",
+      "enabled": true,
+      "installed": true,
+      "pin": "96608e078b2d5ea607c5c3b8b5a54d1c1fba6846"
+    },
+    {
+      "id": "pullstack",
+      "kind": "git",
+      "source": "https://github.com/VenTheZone/pullstack",
+      "paths": [
+        "skills",
+        "INSTALL.md"
+      ],
+      "license": "MIT",
+      "description": "Port the best features of another project into yours; licence-aware, read-only.",
+      "note": "Repo targets work on Windows. Artifact targets need Docker + gVisor (Linux only).",
+      "enabled": true,
+      "installed": true,
+      "pin": "b0e413939ec04f57e5c55efd905730f71e28fe63"
+    },
+    {
+      "id": "brain",
+      "kind": "manual-node",
+      "source": "https://joshtified.com/downloads/brain/joshtified-brain-starter.zip",
+      "license": "unknown",
+      "description": "Markdown-file memory for coding agents (CLI + HTTP API + visualiser).",
+      "enabled": true,
+      "installed": true,
+      "pin": "starter-2026-10-24",
+      "note": "Vendored 2026-11-08 from joshtified-brain-starter.zip (files dated 2026-10-24). No license ships with the starter; add one before sharing this fork. Toggle via the dashboard Skills card or daemon POST /skills/enable."
+    }
+  ]
+}

@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🧠 Brain - what the agents learned</title>
+<link rel="icon" href="data:,">
+<style>
+ :root {
+ --bg: #f4f6f9;
+ --panel: #ffffff;
+ --ink: #1e293b;
+ --ink-soft: #64748b;
+ --line: #e2e8f0;
+ --accent: #2563eb;
+ --accent-soft: #eff6ff;
+ --side-bg: #0f172a;
+ --side-ink: #cbd5e1;
+ --side-active: #1e293b;
+ --radius: 12px;
+ --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 8px 24px rgba(15, 23, 42, .06);
+ }
+ * { box-sizing: border-box; }
+ html, body { margin: 0; height: 100%; }
+ body {
+ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+ background: var(--bg); color: var(--ink); font-size: 14px;
+ }
+ button { font: inherit; cursor: pointer; }
+ input, select, textarea { font: inherit; }
+
+ /* ---------- header ---------- */
+ header {
+ height: 60px; background: var(--panel); border-bottom: 1px solid var(--line);
+ display: flex; align-items: center; gap: 16px; padding: 0 20px; position: sticky; top: 0; z-index: 20;
+ }
+ header h1 { font-size: 18px; margin: 0; letter-spacing: -.01em; white-space: nowrap; }
+ header h1 small { color: var(--ink-soft); font-weight: 400; font-size: 12px; margin-left: 6px; }
+ .search-wrap { flex: 1; display: flex; gap: 8px; max-width: 640px; }
+ .search-wrap input[type=search] {
+ flex: 1; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px;
+ background: var(--bg); outline: none;
+ }
+ .search-wrap input[type=search]:focus { border-color: var(--accent); background: #fff; box-shadow: 0 0 0 3px rgba(37, 99, 235, .12); }
+ .search-wrap select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+ header .btn {
+ padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+ color: var(--ink); white-space: nowrap;
+ }
+ header .btn:hover { background: var(--bg); }
+ header .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+ header .btn.primary:hover { background: #1d4ed8; }
+ .conn { display: flex; align-items: center; gap: 6px; color: var(--ink-soft); font-size: 12px; white-space: nowrap; }
+ .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+ .dot.err { background: #ef4444; }
+
+ /* ---------- layout ---------- */
+ .layout { display: flex; min-height: calc(100vh - 60px); }
+ aside {
+ width: 264px; flex-shrink: 0; background: var(--side-bg); color: var(--side-ink);
+ padding: 16px 12px 40px; overflow-y: auto; position: sticky; top: 60px; height: calc(100vh - 60px);
+ }
+ .nav-label {
+ font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #64748b;
+ margin: 18px 8px 6px;
+ }
+ .nav-item {
+ display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+ background: none; border: none; color: var(--side-ink); padding: 7px 8px; border-radius: 8px;
+ font-size: 13px;
+ }
+ .nav-item:hover { background: rgba(255,255,255,.05); }
+ .nav-item.active { background: var(--side-active); color: #fff; }
+ .nav-item .n { margin-left: auto; font-size: 11px; color: #94a3b8; background: rgba(255,255,255,.08); border-radius: 99px; padding: 1px 8px; }
+ .nav-item.active .n { color: #c7d2fe; }
+ .tags-cloud { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px; }
+ .tag-chip {
+ border: 1px solid rgba(255,255,255,.14); background: none; color: var(--side-ink);
+ border-radius: 99px; padding: 3px 10px; font-size: 12px;
+ }
+ .tag-chip:hover { background: rgba(255,255,255,.08); }
+ .tag-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+ .tag-chip .c { color: #64748b; font-size: 10px; margin-left: 4px; }
+ .tag-chip.active .c { color: #dbeafe; }
+
+ /* ---------- main ---------- */
+ main { flex: 1; padding: 20px 24px 60px; min-width: 0; }
+ .stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+ .stat {
+ background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+ padding: 10px 16px; box-shadow: var(--shadow);
+ }
+ .stat b { display: block; font-size: 20px; line-height: 1.1; }
+ .stat span { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: .05em; }
+ .stat.knowledge b { color: #2563eb; } .stat.memory b { color: #b45309; }
+ .stat.decision b { color: #7c3aed; } .stat.note b { color: #475569; }
+
+ .section-title { font-size: 13px; color: var(--ink-soft); margin: 22px 0 10px; display: flex; align-items: center; gap: 8px; }
+ .section-title .count { background: var(--line); border-radius: 99px; padding: 1px 8px; font-size: 11px; }
+
+ .list { display: flex; flex-direction: column; gap: 10px; }
+ .card {
+ background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+ padding: 14px 16px; box-shadow: var(--shadow); cursor: pointer; transition: border-color .12s, transform .12s;
+ }
+ .card:hover { border-color: #c7d2fe; transform: translateY(-1px); }
+ .card .top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+ .card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+ .card p { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.5;
+ display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+ .card .foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 11px; color: var(--ink-soft); flex-wrap: wrap; }
+ .card .when { margin-left: auto; white-space: nowrap; }
+
+ .badge { border-radius: 99px; padding: 2px 9px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+ .t-knowledge { background: #dbeafe; color: #1d4ed8; }
+ .t-memory    { background: #fef3c7; color: #b45309; }
+ .t-decision  { background: #ede9fe; color: #6d28d9; }
+ .t-note      { background: #e2e8f0; color: #475569; }
+ .scope-chip { border-radius: 99px; padding: 2px 9px; font-size: 11px; font-weight: 500; color: #fff; }
+ .tag { background: #f1f5f9; color: #475569; border-radius: 99px; padding: 2px 8px; font-size: 11px; }
+
+ .empty { background: var(--panel); border: 1px dashed var(--line); border-radius: var(--radius);
+ padding: 40px; text-align: center; color: var(--ink-soft); }
+ .empty b { color: var(--ink); }
+
+ /* ---------- detail panel ---------- */
+ .backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 40; display: none; }
+ .backdrop.show { display: block; }
+ #detail {
+ position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 92vw); background: var(--panel);
+ z-index: 50; box-shadow: -12px 0 40px rgba(15, 23, 42, .18); transform: translateX(100%);
+ transition: transform .18s ease; display: flex; flex-direction: column;
+ }
+ #detail.show { transform: translateX(0); }
+ #detail header { position: static; height: auto; padding: 18px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; gap: 8px; }
+ #detail .body { padding: 20px; overflow-y: auto; line-height: 1.7; }
+ #detail .body p { margin: 0 0 10px; color: var(--ink); }
+ #detail .body ul { margin: 0 0 12px 0; padding-left: 22px; color: var(--ink); }
+ #detail .body ul li { margin: 0 0 5px; line-height: 1.6; color: var(--ink); }
+ #detail .body h2 { margin: 0 0 14px; font-size: 21px; letter-spacing: -.01em; color: var(--ink); }
+ #detail .body pre.code { background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; margin: 0 0 12px; }
+ #detail .body code { background: #f1f5f9; border-radius: 4px; padding: 1px 5px; font-size: 12.5px; color: #0f172a; }
+ #detail .body code.in-text { color: #0f172a; }
+ #detail .body p code { color: #0f172a; background: #f1f5f9; }
+ #detail .body a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+ #detail .body a:hover { color: #1d4ed8; }
+ #detail .meta-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; font-size: 12px; color: var(--ink-soft); }
+ .icon-btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; }
+ .icon-btn:hover { background: var(--bg); }
+ .icon-btn.danger { color: #dc2626; border-color: #fecaca; }
+ .icon-btn.danger:hover { background: #fef2f2; }
+ #detail .close { margin-left: auto; }
+
+ /* ---------- editor dialog ---------- */
+ dialog {
+ border: none; border-radius: 14px; padding: 0; width: min(560px, 94vw); box-shadow: 0 24px 80px rgba(15,23,42,.3);
+ color: var(--ink);
+ }
+ dialog::backdrop { background: rgba(15, 23, 42, .45); }
+ dialog form { display: flex; flex-direction: column; gap: 12px; padding: 22px; }
+ dialog h2 { margin: 0 0 4px; font-size: 17px; }
+ .field { display: flex; flex-direction: column; gap: 5px; }
+ .field label { font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+ .field input, .field select, .field textarea {
+ padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; outline: none; background: #fff;
+ }
+ .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+ .field textarea { min-height: 140px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; line-height: 1.5; }
+ .row2 { display: flex; gap: 12px; }
+ .row2 .field { flex: 1; }
+ .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+
+ /* ---------- toast ---------- */
+ #toast {
+ position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(20px);
+ background: #0f172a; color: #e2e8f0; padding: 10px 18px; border-radius: 99px; font-size: 13px;
+ opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 60;
+ }
+ #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+ @media (max-width: 900px) {
+ header { flex-wrap: wrap; height: auto; padding: 10px 12px; }
+ .search-wrap { order: 3; max-width: none; width: 100%; }
+ .conn { display: none; }
+ .layout { flex-direction: column; }
+ aside {
+ position: static; width: 100%; height: auto; display: flex; flex-wrap: wrap;
+ align-items: center; gap: 6px; padding: 10px 12px;
+ }
+ .nav-label { margin: 0 6px 0 0; white-space: nowrap; }
+ #projectNav, #typeNav { display: contents; }
+ .nav-item { width: auto; white-space: nowrap; }
+ .tags-cloud { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
+ }
+</style>
+</head>
+<body>
+
+<header>
+ <h1>🧠 Brain <small>what the agents learned</small></h1>
+ <div class="search-wrap">
+ <input type="search" id="q" placeholder="Search everything…  (e.g. build, ports, decision)" autocomplete="off">
+ <select id="typeFilter">
+ <option value="">All types</option>
+ <option value="knowledge">Knowledge</option>
+ <option value="memory">Memory</option>
+ <option value="decision">Decision</option>
+ <option value="note">Note</option>
+ </select>
+ </div>
+ <button class="btn" id="refreshBtn" title="Refresh">⟳</button>
+ <button class="btn primary" id="addBtn">+ Add entry</button>
+ <div class="conn" id="conn"><span class="dot" id="connDot"></span><span id="connText">…</span></div>
+</header>
+
+<div class="layout">
+ <aside>
+ <div class="nav-label">Projects</div>
+ <div id="projectNav"></div>
+
+ <div class="nav-label">Tags</div>
+ <div class="tags-cloud" id="tagCloud"></div>
+
+ <div class="nav-label">Types</div>
+ <div class="tags-cloud" id="typeNav"></div>
+
+ <div class="nav-label">Help</div>
+ <button class="nav-item" id="exportBtn" title="Export this project's brain as one Markdown file">📦 Export project brain</button>
+ <button class="nav-item" id="docsBtn">📖 API reference</button>
+ </aside>
+
+ <main>
+ <div class="stats" id="stats"></div>
+
+ <div class="section-title" id="sectionTitle"></div>
+ <div class="list" id="entriesList"></div>
+ </main>
+</div>
+
+<div class="backdrop" id="backdrop"></div>
+
+<section id="detail" aria-hidden="true">
+ <header>
+ <span id="dType" class="badge"></span>
+ <span id="dScope" class="scope-chip"></span>
+ <button class="icon-btn" id="dEdit">✎ Edit</button>
+ <button class="icon-btn danger" id="dDelete">🗑 Delete</button>
+ <button class="icon-btn close" id="dClose">✕</button>
+ </header>
+ <div class="body">
+ <h2 id="dTitle"></h2>
+ <div class="meta-row">
+ <span id="dTags"></span>
+ <span id="dCreated"></span>
+ <span id="dUpdated"></span>
+ <span id="dSource"></span>
+ </div>
+ <div id="dBody"></div>
+ </div>
+</section>
+
+<dialog id="editor">
+ <form method="dialog" id="editorForm">
+ <h2 id="editorTitle">Add entry</h2>
+ <div class="row2">
+ <div class="field">
+ <label for="fType">Type</label>
+ <select id="fType">
+ <option value="knowledge">knowledge - durable fact, how-to</option>
+ <option value="memory">memory - working context, current state</option>
+ <option value="decision">decision - a choice + why</option>
+ <option value="note">note - everything else</option>
+ </select>
+ </div>
+ <div class="field">
+ <label for="fScope">Scope / project</label>
+ <input id="fScope" list="scopeList" placeholder="global">
+ <datalist id="scopeList"></datalist>
+ </div>
+ </div>
+ <div class="field">
+ <label for="fTitle">Title</label>
+ <input id="fTitle" required placeholder="Short, specific title">
+ </div>
+ <div class="row2">
+ <div class="field">
+ <label for="fTags">Tags (comma separated)</label>
+ <input id="fTags" placeholder="build, windows, gotcha">
+ </div>
+ <div class="field">
+ <label for="fSource">Source (optional)</label>
+ <input id="fSource" placeholder="where this came from">
+ </div>
+ </div>
+ <div class="field">
+ <label for="fBody">Body (Markdown)</label>
+ <textarea id="fBody" placeholder="What did you learn? Write it for the next agent…"></textarea>
+ </div>
+ <div class="dialog-actions">
+ <button class="icon-btn" value="cancel" formnovalidate>Cancel</button>
+ <button class="icon-btn primary2" value="save" id="saveBtn" style="background:var(--accent);color:#fff;border-color:var(--accent)">Save</button>
+ </div>
+ </form>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* brain/ui/index.html - visualizer for the shared brain. Talks to the same-origin API. */
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const TYPE_META = {
+ knowledge: { label: 'Knowledge', cls: 't-knowledge' },
+ memory:    { label: 'Memory',    cls: 't-memory' },
+ decision:  { label: 'Decision',  cls: 't-decision' },
+ note:      { label: 'Note',      cls: 't-note' },
+};
+const TYPE_ORDER = ['knowledge', 'memory', 'decision', 'note'];
+const SCOPE_EMOJI = {
+ global: '🌐', playport: '🎮', professionpilot: '💼', 'future-greenhouse': '🌱',
+ project: '☕', 'haul-empire': '🚛', 'bee-empire': '🐝',
+ pdfeditor: '📄', plugins: '🧩', 'katunga-businessplan': '📈', 'localbuff': '🔌',
+};
+const SCOPE_COLORS = ['#2563eb','#0d9488','#7c3aed','#db2777','#ea580c','#16a34a','#0284c7','#9333ea','#ca8a04','#dc2626'];
+
+function scopeColor(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return SCOPE_COLORS[h % SCOPE_COLORS.length]; }
+function scopeEmoji(s) { return SCOPE_EMOJI[s] || '📦'; }
+
+function relTime(iso) {
+ if (!iso) return '';
+ const t = new Date(iso).getTime();
+ if (Number.isNaN(t)) return '';
+ const s = Math.max(0, (Date.now() - t) / 1000);
+ if (s < 60) return 'just now';
+ if (s < 3600) return Math.floor(s / 60) + 'm ago';
+ if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+ const d = Math.floor(s / 86400);
+ return d < 30 ? d + 'd ago' : new Date(iso).toLocaleDateString();
+}
+
+function md(text) {
+ // Lightweight Markdown renderer tuned for readable human prose.
+ // We expand real paragraphs before we do anything else so body text
+ // gets spacing and its own line-height - not a wall of inline spans.
+ let html = esc(text);
+ const PROSE_SYNTAX = /\*\*([^*]+)\*\*/g;
+ const EM_PH = /\*([^*]+)\*/g;
+ const CODE_SPAN = /`([^`]+)`/g;
+ const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+
+ function applyInline(s) {
+ s = s.replace(PROSE_SYNTAX, '<strong>$1</strong>');
+ s = s.replace(EM_PH, '<em>$1</em>');
+ s = s.replace(CODE_SPAN, '<code>$1</code>');
+ s = s.replace(LINK, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+ return s;
+ }
+
+ // 1. Protect fenced code blocks first (they stay raw).
+ let parts = [];
+ let last = 0;
+ html = html.replace(/```([\s\S]*?)```/g, (m, code) => {
+ parts.push('<pre class="code">' + esc(code) + '</pre>');
+ return '__CODE_BLOCK__';
+ });
+ // 2. Split remaining text on blank lines -> real paragraphs.
+ const rawBlocks = html.split(/\r?\n\s*\r?\n/);
+ const blocks = [];
+ for (const b of rawBlocks) {
+ const t = b.replace(/\s+/g, ' ').trim();
+ if (!t) continue;
+ // A single non-blank line that looks like a header: render as a heading.
+ if (/^[\s]*#{1,3}\s/.test(t)) {
+ blocks.push(applyInline(t));
+ } else if (/^[\s]*- /.test(t) || /^[\s]*\* /.test(t)) {
+ // bullet list: keep inline but wrap in ul so it reads as a list, not a paragraph
+ const items = t.match(/^[\s]*[-*]\s[^\n]*/gm);
+ blocks.push('<ul>' + (items || [t]).map((it) => '<li>' + applyInline(it.replace(/^[\s]*[-*]\s/, '')) + '</li>').join('') + '</ul>');
+ } else {
+ blocks.push('<p style="margin:0 0 10px">' + applyInline(t) + '</p>');
+ }
+ }
+ // 3. Reinsert code blocks at the __CODE_BLOCK__ placeholders.
+ let out = blocks.join('');
+ let idx = 0;
+ out = out.replace(/__CODE_BLOCK__/g, () => parts[idx++]);
+ return out;
+}
+
+function snippet(e, len) {
+ const t = (e.body || '').replace(/\s+/g, ' ').trim();
+ return t.length > len ? t.slice(0, len) + '…' : t;
+}
+
+/* ---------------- API ---------------- */
+const api = {
+ async request(method, url, body) {
+ const opts = { method, headers: {} };
+ if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+ const r = await fetch(url, opts);
+ if (!r.ok) { let msg = r.status + ' ' + r.statusText; try { msg = (await r.json()).error || msg; } catch (e) {} throw new Error(msg); }
+ return r.json();
+ },
+ search: (params) => { const qs = new URLSearchParams(); for (const [k, v] of Object.entries(params)) if (v) qs.set(k, v); return api.request('GET', '/api/search?' + qs.toString()); },
+ get: (id) => api.request('GET', '/api/entries/' + encodeURIComponent(id)),
+ create: (e) => api.request('POST', '/api/entries', e),
+ update: (id, patch) => api.request('PATCH', '/api/entries/' + encodeURIComponent(id), patch),
+ del: (id) => api.request('DELETE', '/api/entries/' + encodeURIComponent(id)),
+};
+
+/* ---------------- state & rendering ---------------- */
+const state = { scope: '', q: '', type: '', tag: '', entries: [], all: [] };
+let refreshTimer = null;
+let editingId = null;
+
+function setConn(ok, text) {
+ $('connDot').className = 'dot' + (ok ? '' : ' err');
+ $('connText').textContent = text;
+}
+
+async function load() {
+ try {
+ const params = { q: state.q, type: state.type, tag: state.tag, scope: state.scope };
+ state.entries = await api.search(params);
+ if (state.q || state.type || state.tag || state.scope) {
+ state.all = state.all.length ? state.all : await api.search({});
+ } else {
+ state.all = state.entries;
+ }
+ if (!state.all.length) state.all = await api.search({});
+ setConn(true, state.entries.length + ' shown');
+ renderAll();
+ } catch (e) {
+ setConn(false, 'offline');
+ $('entriesList').innerHTML = '<div class="empty"><b>Can’t reach the brain.</b><br><br>Start it with:<br><code>./brain/brain serve</code><br><br><span style="font-size:12px">' + esc(e.message) + '</span></div>';
+ $('stats').innerHTML = '';
+ $('projectNav').innerHTML = '';
+ }
+}
+
+function renderAll() {
+ renderStats();
+ renderProjects();
+ renderTags();
+ renderTypes();
+ renderList();
+}
+
+function renderStats() {
+ const counts = { knowledge: 0, memory: 0, decision: 0, note: 0 };
+ for (const e of state.all) counts[e.type] = (counts[e.type] || 0) + 1;
+ const scopes = new Set(state.all.map((e) => e.scope || 'global'));
+ let html = '<div class="stat"><b>' + state.all.length + '</b><span>entries</span></div>';
+ html += '<div class="stat"><b>' + scopes.size + '</b><span>projects</span></div>';
+ for (const t of TYPE_ORDER) html += '<div class="stat ' + t + '"><b>' + (counts[t] || 0) + '</b><span>' + t + '</span></div>';
+ $('stats').innerHTML = html;
+}
+
+function renderProjects() {
+ const byScope = {};
+ for (const e of state.all) {
+ const s = e.scope || 'global';
+ byScope[s] = byScope[s] || { total: 0, types: {} };
+ byScope[s].total++;
+ byScope[s].types[e.type] = (byScope[s].types[e.type] || 0) + 1;
+ }
+ const scopes = Object.keys(byScope).sort((a, b) => (a === 'global' ? -1 : b === 'global' ? 1 : a.localeCompare(b)));
+ let html = '';
+ html += navItem('', '📚 All projects', state.all.length, '');
+ for (const s of scopes) {
+ const tip = 'scope ' + s + ' - ' + Object.entries(byScope[s].types).map(([t, n]) => n + ' ' + t).join(', ');
+ html += navItem(s, scopeEmoji(s) + ' ' + esc(s), byScope[s].total, tip);
+ }
+ $('projectNav').innerHTML = html;
+}
+
+function navItem(scope, label, count, tip) {
+ return '<button class="nav-item' + (state.scope === scope ? ' active' : '') + '" data-scope="' + esc(scope) + '" title="' + esc(tip || '') + '">'
+ + '<span>' + label + '</span><span class="n">' + count + '</span></button>';
+}
+
+function renderTags() {
+ const counts = {};
+ for (const e of state.all) for (const t of e.tags || []) counts[t] = (counts[t] || 0) + 1;
+ const top = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 24);
+ $('tagCloud').innerHTML = top.map(([t, n]) =>
+ '<button class="tag-chip' + (state.tag === t ? ' active' : '') + '" data-tag="' + esc(t) + '">' + esc(t) + '<span class="c">' + n + '</span></button>'
+ ).join('') || '<span style="color:#64748b;font-size:12px">no tags yet</span>';
+}
+
+function renderTypes() {
+ $('typeNav').innerHTML = TYPE_ORDER.map((t) =>
+ '<button class="tag-chip' + (state.type === t ? ' active' : '') + '" data-type="' + t + '">' + t + '</button>'
+ ).join('');
+}
+
+function cardFor(e) {
+ const meta = TYPE_META[e.type] || TYPE_META.note;
+ const when = relTime(e.updated || e.created);
+ const tags = (e.tags || []).map((t) => '<span class="tag">' + esc(t) + '</span>').join('');
+ const snip = snippet(e, 220);
+ return '<div class="card" data-id="' + esc(e.id) + '">'
+ + '<div class="top"><span class="badge ' + meta.cls + '">' + meta.label + '</span>'
+ + '<span class="scope-chip" style="background:' + scopeColor(e.scope) + '">' + scopeEmoji(e.scope) + ' ' + esc(e.scope || 'global') + '</span></div>'
+ + '<h3>' + esc(e.title) + '</h3>'
+ + (snip ? '<p>' + esc(snip) + '</p>' : '')
+ + '<div class="foot">' + tags + '<span class="when">updated ' + when + '</span></div>'
+ + '</div>';
+}
+
+function renderList() {
+ const list = $('entriesList');
+ if (!state.entries.length) {
+ list.innerHTML = '<div class="empty"><b>Nothing here yet.</b><br><br>' + (state.q || state.tag || state.type || state.scope
+ ? 'Try a different filter, or clear the search.' : 'Agents haven’t written anything to this scope yet - click “+ Add entry” to start.') + '</div>';
+ return;
+ }
+ list.innerHTML = state.entries.map(cardFor).join('');
+ for (const c of list.querySelectorAll('.card')) {
+ c.addEventListener('click', () => openDetail(c.dataset.id));
+ }
+ $('sectionTitle').innerHTML = descOf() + '<span class="count">' + state.entries.length + '</span>';
+}
+
+function descOf() {
+ const parts = [];
+ if (state.q) parts.push('“' + esc(state.q) + '”');
+ if (state.type) parts.push(esc(state.type) + ' entries');
+ if (state.tag) parts.push('tag #' + esc(state.tag));
+ if (state.scope) parts.push('scope ' + esc(state.scope));
+ return parts.length ? 'Filtered: ' + parts.join(' · ') : 'All entries - newest first';
+}
+
+/* ---------------- detail ---------------- */
+let current = null;
+
+async function openDetail(id) {
+ try {
+ current = await api.get(id);
+ } catch (e) { toast(e.message); return; }
+ const e = current;
+ const meta = TYPE_META[e.type] || TYPE_META.note;
+ $('dType').textContent = meta.label;
+ $('dType').className = 'badge ' + meta.cls;
+ $('dScope').textContent = scopeEmoji(e.scope) + ' ' + (e.scope || 'global');
+ $('dScope').style.background = scopeColor(e.scope);
+ $('dTitle').textContent = e.title;
+ $('dTags').innerHTML = (e.tags || []).map((t) => '<span class="tag">' + esc(t) + '</span>').join(' ');
+ $('dCreated').textContent = 'created ' + (e.created ? new Date(e.created).toLocaleString() : ' - ');
+ $('dUpdated').textContent = 'updated ' + (e.updated ? relTime(e.updated) : ' - ');
+ $('dSource').textContent = e.source ? 'source: ' + e.source : '';
+ $('dBody').innerHTML = md(e.body || '');
+ $('detail').classList.add('show');
+ $('backdrop').classList.add('show');
+ $('detail').setAttribute('aria-hidden', 'false');
+}
+
+function closeDetail() {
+ $('detail').classList.remove('show');
+ $('backdrop').classList.remove('show');
+ $('detail').setAttribute('aria-hidden', 'true');
+ current = null;
+}
+
+/* ---------------- editor ---------------- */
+function openEditor(entry) {
+ editingId = entry ? entry.id : null;
+ $('editorTitle').textContent = entry ? 'Edit entry' : 'Add entry';
+ $('fType').value = entry ? entry.type : (state.type || 'knowledge');
+ $('fScope').value = entry ? (entry.scope || 'global') : (state.scope || 'global');
+ $('fTitle').value = entry ? entry.title : '';
+ $('fTags').value = entry ? (entry.tags || []).join(', ') : '';
+ $('fSource').value = entry ? (entry.source || '') : '';
+ $('fBody').value = entry ? (entry.body || '') : '';
+ const datalist = $('scopeList');
+ const scopes = [...new Set(state.all.map((e) => e.scope || 'global'))];
+ for (const s of ['global', 'playport', 'professionpilot', 'future-greenhouse', 'project', 'haul-empire', 'bee-empire', 'pdfeditor', 'plugins', 'katunga-businessplan', 'localbuff']) if (!scopes.includes(s)) scopes.push(s);
+ datalist.innerHTML = scopes.map((s) => '<option value="' + esc(s) + '">').join('');
+ $('editor').showModal();
+}
+
+async function saveEntry(ev) {
+ ev.preventDefault();
+ if (ev.submitter && ev.submitter.value === 'cancel') { $('editor').close(); closeDetail(); return; }
+ const payload = {
+ type: $('fType').value,
+ scope: $('fScope').value.trim() || 'global',
+ title: $('fTitle').value.trim(),
+ tags: $('fTags').value.split(',').map((t) => t.trim()).filter(Boolean),
+ source: $('fSource').value.trim(),
+ body: $('fBody').value,
+ };
+ if (!payload.title) { toast('Title is required'); return; }
+ try {
+ if (editingId) {
+ await api.update(editingId, payload);
+ toast('Entry updated');
+ } else {
+ await api.create(payload);
+ toast('Entry added to the brain');
+ }
+ $('editor').close();
+ closeDetail();
+ state.all = [];   // drop cache so counts/sidebar refresh
+ await load();
+ } catch (e) { toast('Error: ' + e.message); }
+}
+
+/* ---------------- toast ---------------- */
+let toastTimer = null;
+function toast(msg) {
+ const t = $('toast');
+ t.textContent = msg;
+ t.classList.add('show');
+ clearTimeout(toastTimer);
+ toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+/* ---------------- events ---------------- */
+$('q').addEventListener('input', () => {
+ clearTimeout(refreshTimer);
+ refreshTimer = setTimeout(() => { state.q = $('q').value.trim(); load(); }, 250);
+});
+$('typeFilter').addEventListener('change', () => { state.type = $('typeFilter').value; load(); });
+$('refreshBtn').addEventListener('click', () => { state.all = []; load(); });
+$('addBtn').addEventListener('click', () => openEditor(null));
+$('projectNav').addEventListener('click', (ev) => {
+ const btn = ev.target.closest('[data-scope]');
+ if (!btn) return;
+ state.scope = btn.dataset.scope;
+ state.tag = ''; state.type = ''; state.q = ''; $('q').value = ''; $('typeFilter').value = '';
+ load();
+});
+$('tagCloud').addEventListener('click', (ev) => {
+ const btn = ev.target.closest('[data-tag]');
+ if (!btn) return;
+ state.tag = state.tag === btn.dataset.tag ? '' : btn.dataset.tag;
+ load();
+});
+$('typeNav').addEventListener('click', (ev) => {
+ const btn = ev.target.closest('[data-type]');
+ if (!btn) return;
+ state.type = state.type === btn.dataset.type ? '' : btn.dataset.type;
+ $('typeFilter').value = state.type;
+ load();
+});
+$('dClose').addEventListener('click', closeDetail);
+$('backdrop').addEventListener('click', closeDetail);
+document.addEventListener('keydown', (ev) => {
+ if (ev.key === 'Escape') { closeDetail(); if ($('editor').open) $('editor').close(); }
+});
+$('dEdit').addEventListener('click', () => { if (current) openEditor(current); });
+$('dDelete').addEventListener('click', async () => {
+ if (!current) return;
+ if (!confirm('Delete “' + current.title + '”? This removes it from the brain.')) return;
+ try { await api.del(current.id); toast('Entry deleted'); closeDetail(); await load(); }
+ catch (e) { toast('Error: ' + e.message); }
+});
+$('editorForm').addEventListener('submit', saveEntry);
+$('saveBtn').addEventListener('click', (ev) => { ev.preventDefault(); saveEntry(ev); });
+$('docsBtn').addEventListener('click', () => window.open('/api-docs', '_blank'));
+$('exportBtn').addEventListener('click', () => {
+ const s = state.scope ? '?scope=' + encodeURIComponent(state.scope) : '';
+ window.open('/ui/export.html' + s, '_blank');
+});
+
+/* auto-refresh every 12s (paused while reading/editing) */
+setInterval(() => {
+ if (document.hidden || $('editor').open || $('detail').classList.contains('show')) return;
+ state.all = [];
+ load();
+}, 12000);
+
+load();
+</script>
+</body>
+</html>
