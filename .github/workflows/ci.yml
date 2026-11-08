@@ -33,3 +33,4 @@ jobs:
           python tests/skill_test.py
           python tests/daemon_test.py
           python tests/gimp_test.py
+          python tests/godot_test.py
