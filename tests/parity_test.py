@@ -1,4 +1,4 @@
-"""Tool-surface parity: the Python host must register the full 61-tool surface + prompt.
+"""Tool-surface parity: the Python host must register the full 65-tool surface + prompt.
 
 Mirrors rust/crates/ultima3d-server/tests/parity.rs so the restored Python host
 cannot silently lose tools, and checks the surface the skill and daemon rely on.
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ultima3d.server  # noqa: F401  (registers the 18 procedural tools)
 from ultima3d.registry import mcp
 
-EXPECTED_COUNT = 61
+EXPECTED_COUNT = 65
 
 REQUIRED = {
     # procedural + pipeline
@@ -22,7 +22,9 @@ REQUIRED = {
     "rig_asset", "save_recipe", "load_recipe", "reset_scene", "ultima3d_status",
     "ultima3d_status_all", "export_asset_to_godot", "review_asset_loop",
     # live Blender
-    "get_scene_info", "get_object_info", "execute_blender_code", "get_viewport_screenshot",
+    "get_scene_info", "get_object_info", "execute_blender_code",    "get_viewport_screenshot",
+    "get_blenderkit_status", "search_blenderkit_assets",
+    "get_blenderkit_asset_preview", "download_blenderkit_asset",
     "get_addon_status",
     # Godot
     "godot_status", "godot_scene_tree", "godot_run_project", "godot_stop_project",
@@ -51,7 +53,7 @@ def maybe_await(value):
 def main():
     tools = maybe_await(mcp.list_tools())
     names = {tool.name for tool in tools}
-    check("registry holds 61 tools", len(names) == EXPECTED_COUNT,
+    check("registry holds 65 tools", len(names) == EXPECTED_COUNT,
           f"got {len(names)}; missing={sorted(EXPECTED_COUNT and set())}")
     missing = sorted(REQUIRED - names)
     check("every required tool is registered", not missing, f"missing={missing}")

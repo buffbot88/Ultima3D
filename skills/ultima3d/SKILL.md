@@ -39,7 +39,7 @@ python -m ultima3d.skill call <tool> '<json-args>'
 
 - The first call starts a loopback daemon (`127.0.0.1:8791`) that owns the Blender worker, so the
   scene, recipe and blueprint **persist between calls**. Do not spawn Blender yourself.
-- `python -m ultima3d.skill tools` lists all 61 tools with one-line descriptions.
+- `python -m ultima3d.skill tools` lists all 65 tools with one-line descriptions.
 - `python -m ultima3d.skill status` shows the daemon, the tool count and the session budget.
 - `python -m ultima3d.skill stop` stops the daemon and the Blender worker.
 - Long JSON also works from a file: `--args-file args.json`, or piped on stdin.
@@ -96,10 +96,13 @@ python -m ultima3d.skill call render_asset '{"resolution": 640}'
 `finalize_asset`, `rig_asset`, `save_recipe`, `load_recipe`, `reset_scene`, `ultima3d_status`,
 `ultima3d_status_all`, `export_asset_to_godot`, `review_asset_loop`.
 
-**Live Blender GUI (32)** — `get_scene_info`, `get_object_info`, `execute_blender_code`,
+**Live Blender GUI (36)** — `get_scene_info`, `get_object_info`, `execute_blender_code`,
 `get_viewport_screenshot`, `get_addon_status`, asset-library tools (Poly Haven, Sketchfab, Poly
-Pizza, Hyper3D Rodin, Hunyuan3D) and the rest, all driving the user's **open** Blender over
-`localhost:9876`. Run `tools` for the exact names.
+Pizza, BlenderKit, Hyper3D Rodin, Hunyuan3D) and the rest, all driving the user's **open** Blender
+over `localhost:9876`. Run `tools` for the exact names. BlenderKit adds free models, materials
+and HDRs (`search_blenderkit_assets`, `get_blenderkit_asset_preview`,
+`download_blenderkit_asset`); check each asset's licence, this library is NOT all-CC0.
+A `BLENDERKIT_API_KEY` env var (or add-on pref) unlocks private/paid assets.
 
 **Godot 4 (6)** — `godot_status`, `godot_scene_tree`, `godot_run_project`, `godot_stop_project`,
 `godot_debug_output`, `godot_screenshot` (bridge at `GODOT_MCP_URL`, default

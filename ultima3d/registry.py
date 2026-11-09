@@ -21,7 +21,7 @@ Before writing code, call get_addon_status() for blender_version and get_scene_i
 existing objects. Look shader nodes up by type, never by localized name. Never hardcode enum
 identifiers; read them from bl_rna first. After changing anything, call get_viewport_screenshot()
 and get_scene_info() to confirm. Call the asset_creation_strategy prompt for the asset-library
-workflow (Poly Haven, Sketchfab, Poly Pizza, Hyper3D Rodin, Hunyuan3D)."""
+workflow (Poly Haven, Sketchfab, Poly Pizza, BlenderKit, Hyper3D Rodin, Hunyuan3D)."""
 
 
 @asynccontextmanager

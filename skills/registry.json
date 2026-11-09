@@ -9,7 +9,7 @@
       "description": "Ultima3D asset compiler: procedural Blender builds, live GUI, Godot, GIMP.",
       "enabled": true,
       "installed": true,
-      "pin": "v10.0.0"
+      "pin": "v12.0.0"
     },
     {
       "id": "ponytail",

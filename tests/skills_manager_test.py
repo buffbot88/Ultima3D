@@ -136,7 +136,11 @@ try:
         check("GET /modules shows flags", mods.get("ok") and mods["flags"].get("gimp") is True)
         _, tools = request(f"{base}/tools", timeout=30)
         names = {t["name"] for t in tools.get("tools", [])}
-        check("/tools hides nothing by default", len(names) == 61, f"{len(names)} tools")
+        check("/tools hides nothing by default", len(names) == 65, f"{len(names)} tools")
+        check("/tools includes BlenderKit",
+              {"search_blenderkit_assets", "download_blenderkit_asset",
+               "get_blenderkit_status", "get_blenderkit_asset_preview"} <= names,
+              f"{len(names)} tools")
         _, dis = request(f"{base}/modules", {"module": "procedural", "enabled": False}, timeout=10)
         check("POST /modules disables", dis.get("ok") and dis.get("enabled") is False)
         _, tools2 = request(f"{base}/tools", timeout=30)

@@ -1,4 +1,4 @@
-//! Tool-surface parity: the Rust host must expose all 61 tools.
+//! Tool-surface parity: the Rust host must expose all 65 tools.
 //! Needs no Blender/Godot/Photoshop — only initialize + tools/list.
 
 use std::io::{BufRead, BufReader, Write};
@@ -111,6 +111,10 @@ const EXPECTED_TOOLS: &[&str] = &[
     "generate_hyper3d_model_via_images",
     "poll_rodin_job_status",
     "import_generated_asset",
+    "get_blenderkit_status",
+    "search_blenderkit_assets",
+    "get_blenderkit_asset_preview",
+    "download_blenderkit_asset",
     "get_hunyuan3d_status",
     "generate_hunyuan3d_model",
     "poll_hunyuan_job_status",
@@ -120,8 +124,8 @@ const EXPECTED_TOOLS: &[&str] = &[
 ];
 
 #[test]
-fn all_sixty_one_tools_listed() {
-    assert_eq!(EXPECTED_TOOLS.len(), 61, "test itself must expect 61 tools");
+fn all_sixty_five_tools_listed() {
+    assert_eq!(EXPECTED_TOOLS.len(), 65, "test itself must expect 65 tools");
     let res = rpc(&[
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"parity","version":"0"}}}"#,
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,

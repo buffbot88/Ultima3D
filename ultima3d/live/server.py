@@ -309,7 +309,7 @@ After changing anything, call get_viewport_screenshot() to confirm the result lo
 get_scene_info() to confirm the objects exist.
 
 Call the asset_creation_strategy prompt for the full asset-library workflow (Poly Haven,
-Sketchfab, Poly Pizza, Hyper3D Rodin, Hunyuan3D)."""
+Sketchfab, Poly Pizza, BlenderKit, Hyper3D Rodin, Hunyuan3D)."""
 
 # SERVER_INSTRUCTIONS is combined into the unified registry instructions.
 # Tools below register onto the shared `mcp` imported above.
@@ -1383,6 +1383,212 @@ async def download_sketchfab_model(
         logger.error(traceback.format_exc())
         return f"Error downloading Sketchfab model: {str(e)}"
 
+@mcp.tool()
+@telemetry_tool("get_blenderkit_status")
+async def get_blenderkit_status(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Check if BlenderKit integration is enabled in Blender.
+    Returns a message indicating whether BlenderKit features are available.
+    Free assets work with no API key; private/paid ones need one.
+    """
+    try:
+        blender = get_blender_connection()
+        result = blender.send_command("get_blenderkit_status")
+        enabled = result.get("enabled", False)
+        message = result.get("message", "")
+        if enabled:
+            message += (" BlenderKit is good at photoscanned props, furniture and materials, "
+                        "and has a far larger library than Poly Haven.")
+        return message
+    except Exception as e:
+        logger.error(f"Error checking BlenderKit status: {str(e)}")
+        return f"Error checking BlenderKit status: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("search_blenderkit_assets")
+async def search_blenderkit_assets(
+    ctx: Context,
+    query: str = None,
+    asset_type: str = "all",
+    free_only: bool = True,
+    limit: int = 20,
+    user_prompt: str = "") -> str:
+    """
+    Search BlenderKit's library of free models, materials and HDRs.
+
+    Parameters:
+    - query: What you are looking for, in plain words ("wooden chair",
+      "oak floor", "overcast"). Leave it out to browse the most relevant
+      assets instead.
+    - asset_type: model, material, hdr, or all
+    - free_only: When True (default), only assets downloadable without an API
+      key. Set False to include paid/private ones (needs a BlenderKit API key).
+    - limit: How many results to return (default 20, maximum 50)
+    - user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.
+
+    Returns each asset's id, name, type, free/paid flag, author, licence and
+    page URL. Unlike Poly Haven this library is NOT all-CC0, so every result
+    carries its own licence - check it before commercial use.
+    """
+    try:
+        blender = get_blender_connection()
+        logger.info(f"Searching BlenderKit: query={query}, asset_type={asset_type}, free_only={free_only}")
+        result = blender.send_command("search_blenderkit_assets", {
+            "query": query,
+            "asset_type": asset_type,
+            "free_only": free_only,
+            "limit": limit,
+        })
+
+        if result is None:
+            logger.error("Received None result from BlenderKit search")
+            return "Error: Received no response from BlenderKit search"
+
+        if "error" in result:
+            logger.error(f"Error from BlenderKit search: {result['error']}")
+            return f"Error: {result['error']}"
+
+        assets = result.get("assets") or []
+        if not assets:
+            return f"No BlenderKit assets matching '{result.get('query') or query}'"
+
+        total = result.get("total_count", len(assets))
+        header = f"{total} BlenderKit assets matching '{result.get('query') or query}':\n\n"
+        lines = [header]
+        for asset in assets:
+            if asset is None:
+                continue
+            lines.append(f"- {asset.get('name', 'Unnamed')} (id: {asset.get('id', '?')})")
+            lines.append(f"  Type: {asset.get('asset_type', '?')}, "
+                         f"{'free' if asset.get('free') else 'paid/private'}, "
+                         f"licence: {asset.get('license', '?')}")
+            lines.append(f"  Author: {asset.get('author', 'Unknown')}")
+            if asset.get("url"):
+                lines.append(f"  {asset['url']}")
+        if result.get("note"):
+            lines.append(f"\n{result['note']}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error searching BlenderKit assets: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"Error searching BlenderKit assets: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("get_blenderkit_asset_preview")
+async def get_blenderkit_asset_preview(
+    ctx: Context,
+    asset_id: str, user_prompt: str = "") -> Any:
+    """
+    Get a preview thumbnail of a BlenderKit asset by its id.
+    Use this to visually confirm an asset before downloading.
+
+    Parameters:
+    - asset_id: The asset id from search_blenderkit_assets (a UUID, not the asset's name).
+    - user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.
+
+    Writes the thumbnail to a file and returns its absolute path, because many
+    hosts cannot display inline image content. When you get a path back, open it
+    with your file-reading tool (for example read_files) to see the preview. Set
+    BLENDER_MCP_IMAGE_OUTPUT=inline to return the image itself instead.
+    """
+    try:
+        blender = get_blender_connection()
+        logger.info(f"Getting BlenderKit asset preview for id: {asset_id}")
+
+        result = blender.send_command("get_blenderkit_asset_preview", {"asset_id": asset_id})
+
+        if result is None:
+            raise Exception("Received no response from Blender")
+
+        if "error" in result:
+            raise Exception(result["error"])
+
+        image_data = base64.b64decode(result["image_data"])
+        img_format = result.get("format", "jpeg")
+
+        name = result.get("name", "Unknown")
+        author = result.get("author", "Unknown")
+        logger.info(f"Preview retrieved for '{name}' by {author}")
+
+        if image_output_mode() == "inline":
+            return Image(data=image_data, format=img_format)
+        return deliver_image(
+            image_data,
+            img_format,
+            "get_blenderkit_asset_preview",
+            detail=f"BlenderKit preview of '{name}' by {author}.",
+        )
+    except Exception as e:
+        logger.error(f"Error getting BlenderKit preview: {str(e)}")
+        raise Exception(f"Failed to get preview: {str(e)}")
+
+@mcp.tool()
+@trajectory_tool("download_blenderkit_asset")
+async def download_blenderkit_asset(
+    ctx: Context,
+    asset_id: str,
+    asset_type: str = "model",
+    resolution: str = "2K",
+    target_size: float = None, user_prompt: str = "") -> str:
+    """
+    Download a BlenderKit asset by its id and import it into the scene.
+
+    Models arrive from the asset's own .blend (its materials intact); HDRs are
+    downloaded and set as the scene's world; materials are appended and applied
+    to the selected mesh objects (select them first, or the material waits in
+    the material list by name). Paid/private assets need a BlenderKit API key.
+
+    Parameters:
+    - asset_id: The asset id from search_blenderkit_assets (a UUID, not the asset's name).
+    - asset_type: model, material, or hdr (default model)
+    - resolution: HDR texture resolution - 0.5K, 1K, 2K (default), 4K or 8K.
+      Only applies to hdr assets.
+    - target_size: Optional size in Blender units/metres for the largest
+      dimension (a chair is ~1.0, a car ~4.5). Only applies to models.
+    - user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.
+
+    Returns import details including object/material/world names, author and licence.
+    """
+    try:
+        blender = get_blender_connection()
+        logger.info(f"Downloading BlenderKit asset: {asset_id} ({asset_type})")
+
+        result = blender.send_command("download_blenderkit_asset", {
+            "asset_id": asset_id,
+            "asset_type": asset_type,
+            "resolution": resolution,
+            "target_size": target_size,
+        })
+
+        if result is None:
+            logger.error("Received None result from BlenderKit download")
+            return "Error: Received no response from BlenderKit download request"
+
+        if "error" in result:
+            logger.error(f"Error from BlenderKit download: {result['error']}")
+            return f"Error: {result['error']}"
+
+        if result.get("success"):
+            lines = [result.get("message", "BlenderKit asset imported successfully.")]
+            if result.get("imported_objects"):
+                lines.append(f"Created objects: {', '.join(result['imported_objects'])}")
+            if result.get("material"):
+                lines.append(f"Material: {result['material']}")
+            if result.get("world"):
+                lines.append(f"World: {result['world']}")
+            if result.get("author"):
+                lines.append(f"Author: {result['author']}")
+            if result.get("license"):
+                lines.append(f"Licence: {result['license']}")
+            return "\n".join(lines)
+        return f"Failed to download asset: {result.get('message', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f"Error downloading BlenderKit asset: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"Error downloading BlenderKit asset: {str(e)}"
+
 # Poly Pizza's API filters on numeric ids (Category 0-11; License 0 = CC-BY,
 # 1 = CC0) and silently ignores names. Human-friendly names are resolved here,
 # on the server, which is the single source of truth for the mapping: fixes to
@@ -2101,7 +2307,24 @@ def asset_creation_strategy() -> str:
               attribution string is returned by download_polypizza_model() and is also stored on the imported
               object as the custom property polypizza_attribution, so tell the user about it when the model
               is CC-BY. Filter with licence="CC0" if you want models that need no credit.
-        4. Hyper3D(Rodin)
+        4. BlenderKit
+            BlenderKit has the largest library of the lot: photoscanned props, furniture, materials
+            and HDRs. Free assets need no account; private and paid ones need a BlenderKit API key
+            (BLENDERKIT_API_KEY env var or the add-on preferences).
+            Use get_blenderkit_status() to verify its status
+            If BlenderKit is enabled:
+            - For objects/models: first search with search_blenderkit_assets() (asset_type="model",
+              free_only=True by default), preview with get_blenderkit_asset_preview(), then import
+              with download_blenderkit_asset() passing target_size in metres (a chair is ~1.0,
+              a car ~4.5)
+            - For materials: search with asset_type="material", then import with
+              download_blenderkit_asset(); select the target mesh objects first so the material
+              is applied to them, otherwise it waits in the material list by name
+            - For environment lighting: search with asset_type="hdr", then import with
+              download_blenderkit_asset() (resolution="2K" by default, up to "8K")
+            - Unlike Poly Haven this library is NOT all-CC0: every result carries its own
+              licence, so check it before commercial use and credit the author when required
+        5. Hyper3D(Rodin)
             Hyper3D Rodin is good at generating 3D models for single item.
             So don't try to:
             1. Generate the whole scene with one shot
@@ -2126,7 +2349,7 @@ def asset_creation_strategy() -> str:
                     Adjust the imported mesh's location, scale, rotation, so that the mesh is on the right spot.
 
                 You can reuse assets previous generated by running python code to duplicate the object, without creating another generation task.
-        5. Hunyuan3D
+        6. Hunyuan3D
             Hunyuan3D is good at generating 3D models for single item.
             So don't try to:
             1. Generate the whole scene with one shot
@@ -2156,15 +2379,15 @@ def asset_creation_strategy() -> str:
         - Items have right spatial relationship.
     
     4. Recommended asset source priority:
-        - For specific existing objects: First try Sketchfab, then PolyHaven
+        - For specific existing objects: First try BlenderKit, then Sketchfab, then PolyHaven
         - For stylised or low-poly game assets: First try Poly Pizza, then Sketchfab
-        - For generic objects/furniture: First try PolyHaven, then Sketchfab
+        - For generic objects/furniture: First try BlenderKit, then PolyHaven
         - For custom or unique items not available in libraries: Use Hyper3D Rodin or Hunyuan3D
-        - For environment lighting: Use PolyHaven HDRIs
-        - For materials/textures: Use PolyHaven textures
+        - For environment lighting: Use PolyHaven HDRIs, then BlenderKit HDRs
+        - For materials/textures: Use PolyHaven textures, then BlenderKit materials
 
     Only fall back to scripting when:
-    - PolyHaven, Sketchfab, Poly Pizza, Hyper3D, and Hunyuan3D are all disabled
+    - PolyHaven, Sketchfab, Poly Pizza, BlenderKit, Hyper3D, and Hunyuan3D are all disabled
     - A simple primitive is explicitly requested
     - No suitable asset exists in any of the libraries
     - Hyper3D Rodin or Hunyuan3D failed to generate the desired asset

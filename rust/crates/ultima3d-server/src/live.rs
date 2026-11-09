@@ -22,7 +22,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
-pub const EXPECTED_ADDON_PROTOCOL_VERSION: i64 = 9;
+pub const EXPECTED_ADDON_PROTOCOL_VERSION: i64 = 10;
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(180);
 
 fn cli_flag(name: &str) -> Option<String> {
@@ -689,7 +689,7 @@ pub fn polyhaven_scale_note(result: &Value) -> String {
 
 pub const ULTIMA_INSTRUCTIONS: &str = "Ultima3D: procedural asset compiler (ultima3d worker) + live Blender GUI + Godot editor.\n\nProcedural tools (create_3d, refine_asset, render_asset, validate_asset, finalize_asset) build\ngame-ready GLBs in a background Blender worker. Live tools (get_scene_info, execute_blender_code,\nasset libraries) drive the user's open Blender GUI over :9876. Godot tools (godot_*) drive the\nrunning Godot editor bridge. The LLM owns intent and visual judgement; the worker measures results.";
 
-pub const LIVE_INSTRUCTIONS: &str = "Live Blender drives the user's open Blender instance. execute_blender_code runs\narbitrary Python there, so scripts must not assume anything about the user's Blender.\nBefore writing code, call get_addon_status() for blender_version and get_scene_info() for\nexisting objects. Look shader nodes up by type, never by localized name. Never hardcode enum\nidentifiers; read them from bl_rna first. After changing anything, call get_viewport_screenshot()\nand get_scene_info() to confirm. Call the asset_creation_strategy prompt for the asset-library\nworkflow (Poly Haven, Sketchfab, Poly Pizza, Hyper3D Rodin, Hunyuan3D).";
+pub const LIVE_INSTRUCTIONS: &str = "Live Blender drives the user's open Blender instance. execute_blender_code runs\narbitrary Python there, so scripts must not assume anything about the user's Blender.\nBefore writing code, call get_addon_status() for blender_version and get_scene_info() for\nexisting objects. Look shader nodes up by type, never by localized name. Never hardcode enum\nidentifiers; read them from bl_rna first. After changing anything, call get_viewport_screenshot()\nand get_scene_info() to confirm. Call the asset_creation_strategy prompt for the asset-library\nworkflow (Poly Haven, Sketchfab, Poly Pizza, BlenderKit, Hyper3D Rodin, Hunyuan3D).";
 
 pub fn server_instructions() -> String {
     format!("{ULTIMA_INSTRUCTIONS}\n\n{LIVE_INSTRUCTIONS}")
@@ -1486,6 +1486,186 @@ pub fn download_sketchfab_text(uid: &str, target_size: f64) -> String {
     )
 }
 
+pub fn search_blenderkit_text(
+    query: Option<&str>,
+    asset_type: &str,
+    free_only: bool,
+    limit: i64,
+) -> String {
+    let conn = LiveConn::new();
+    let result = match conn.send_command(
+        "search_blenderkit_assets",
+        serde_json::json!({
+            "query": query, "asset_type": asset_type,
+            "free_only": free_only, "limit": limit,
+        }),
+    ) {
+        Ok(r) => r,
+        Err(e) => return format!("Error searching BlenderKit assets: {e}"),
+    };
+    if let Some(err) = err_in_result(&result) {
+        return format!("Error: {err}");
+    }
+    let assets = result
+        .get("assets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let shown = result
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| query.map(str::to_string))
+        .unwrap_or_default();
+    if assets.is_empty() {
+        return format!("No BlenderKit assets matching '{shown}'");
+    }
+    let total = result
+        .get("total_count")
+        .and_then(Value::as_i64)
+        .unwrap_or(assets.len() as i64);
+    let mut out = format!("{total} BlenderKit assets matching '{shown}':\n\n");
+    for asset in assets.iter().filter(|a| !a.is_null()) {
+        let name = asset
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("Unnamed");
+        let id = asset
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        out.push_str(&format!("- {name} (id: {id})\n"));
+        let ty = asset
+            .get("asset_type")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        let free = asset
+            .get("free")
+            .and_then(Value::as_bool)
+            .map(|f| if f { "free" } else { "paid/private" })
+            .unwrap_or("?");
+        let licence = asset
+            .get("license")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        out.push_str(&format!("  Type: {ty}, {free}, licence: {licence}\n"));
+        let author = asset
+            .get("author")
+            .and_then(Value::as_str)
+            .unwrap_or("Unknown");
+        out.push_str(&format!("  Author: {author}\n"));
+        if let Some(url) = asset.get("url").and_then(Value::as_str) {
+            out.push_str(&format!("  {url}\n"));
+        }
+    }
+    if let Some(note) = result.get("note").and_then(Value::as_str) {
+        out.push_str(&format!("\n{note}"));
+    }
+    out
+}
+
+/// Fetch a BlenderKit preview thumbnail. Returns (bytes, format, name, author).
+pub fn blenderkit_preview(asset_id: &str) -> Result<(Vec<u8>, String, String, String), String> {
+    let conn = LiveConn::new();
+    let result = conn
+        .send_command(
+            "get_blenderkit_asset_preview",
+            serde_json::json!({"asset_id": asset_id}),
+        )
+        .map_err(|e| format!("Failed to get preview: {e}"))?;
+    if let Some(err) = err_in_result(&result) {
+        return Err(format!("Failed to get preview: {err}"));
+    }
+    let b64 = result
+        .get("image_data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Failed to get preview: no image data".to_string())?;
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("Failed to get preview: {e}"))?;
+    let format = result
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or("jpeg")
+        .to_string();
+    let name = result
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("Unknown")
+        .to_string();
+    let author = result
+        .get("author")
+        .and_then(Value::as_str)
+        .unwrap_or("Unknown")
+        .to_string();
+    Ok((bytes, format, name, author))
+}
+
+pub fn blenderkit_preview_note(asset_id: &str) -> Result<String, String> {
+    let (bytes, format, name, author) = blenderkit_preview(asset_id)?;
+    deliver_image(
+        &bytes,
+        &format,
+        "get_blenderkit_asset_preview",
+        &format!("BlenderKit preview of '{name}' by {author}."),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn download_blenderkit_text(
+    asset_id: &str,
+    asset_type: &str,
+    resolution: &str,
+    target_size: Option<f64>,
+) -> String {
+    let conn = LiveConn::new();
+    let result = match conn.send_command(
+        "download_blenderkit_asset",
+        serde_json::json!({
+            "asset_id": asset_id, "asset_type": asset_type,
+            "resolution": resolution, "target_size": target_size,
+        }),
+    ) {
+        Ok(r) => r,
+        Err(e) => return format!("Error downloading BlenderKit asset: {e}"),
+    };
+    if let Some(err) = err_in_result(&result) {
+        return format!("Error: {err}");
+    }
+    if result
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let mut lines = vec![result
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("BlenderKit asset imported successfully.")
+            .to_string()];
+        if let Some(objs) = result.get("imported_objects").and_then(Value::as_array) {
+            let names: Vec<&str> = objs.iter().filter_map(Value::as_str).collect();
+            if !names.is_empty() {
+                lines.push(format!("Created objects: {}", names.join(", ")));
+            }
+        }
+        for key in ["material", "world", "author", "license"] {
+            if let Some(v) = result.get(key).and_then(Value::as_str) {
+                let label = key[..1].to_uppercase() + &key[1..];
+                lines.push(format!("{label}: {v}"));
+            }
+        }
+        return lines.join("\n");
+    }
+    format!(
+        "Failed to download asset: {}",
+        result
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Unknown error")
+    )
+}
+
 pub fn search_polypizza_text(
     query: &str,
     category: &Value,
@@ -1905,7 +2085,7 @@ pub fn mime_for(format: &str) -> &'static str {
 pub const ASSET_CREATION_STRATEGY_TITLE: &str =
     "Defines the preferred strategy for creating assets in Blender";
 
-pub const ASSET_CREATION_STRATEGY: &str = "When creating 3D content in Blender, always start by checking if integrations are available:\n\n    0. Before anything, always check the scene from get_scene_info()\n    \n    **IMPORTANT: Visual Verification**\n    - Use get_viewport_screenshot() BEFORE making changes to see the current state\n    - Use get_viewport_screenshot() AFTER executing code or importing assets to verify the result\n    - This helps confirm your changes worked as expected and catch any visual issues\n\n    **IMPORTANT: Trajectory feedback**\n    - When the user accepts a result (\"looks good\", \"keep that\"), call record_trajectory_feedback(feedback=\"accept\")\n    - When they reject or ask to undo, call record_trajectory_feedback(feedback=\"reject\" or \"undo\")\n    - When they correct you (\"too dark\", \"make it taller\"), call record_trajectory_feedback(feedback=\"correction\", correction_text=<their correction>)\n    1. First use the following tools to verify if the following integrations are enabled:\n        1. PolyHaven\n            Use get_polyhaven_status() to verify its status\n            If PolyHaven is enabled:\n            - For objects/models: Use download_polyhaven_asset() with asset_type=\"models\"\n            - For materials/textures: Use download_polyhaven_asset() with asset_type=\"textures\"\n            - For environment lighting: Use download_polyhaven_asset() with asset_type=\"hdris\"\n        2. Sketchfab\n            Sketchfab is good at Realistic models, and has a wider variety of models than PolyHaven.\n            Use get_sketchfab_status() to verify its status\n            If Sketchfab is enabled:\n            - For objects/models: First search using search_sketchfab_models() with your query\n            - Then download specific models using download_sketchfab_model() with the UID\n            - Note that only downloadable models can be accessed, and API key must be properly configured\n            - Sketchfab has a wider variety of models than PolyHaven, especially for specific subjects\n        3. Poly Pizza\n            Poly Pizza is best for stylised, low-poly game assets (it includes the rescued Google Poly archive).\n            Everything on it is free under CC0 or CC-BY, every model is a single self-contained GLB, and the\n            geometry is much lighter than Sketchfab's - prefer it when the scene wants a consistent stylised\n            look, or when many props are needed without heavy meshes.\n            Use get_polypizza_status() to verify its status\n            If Poly Pizza is enabled:\n            - For objects/models: First search using search_polypizza_models(), optionally filtering by\n              category (e.g. \"Animals\", \"Furniture & Decor\"), licence (\"CC0\" or \"CC-BY\"), or animated=True\n            - Then import a specific model using download_polypizza_model() with its ID, passing\n              normalize_size=True and a real-world target_size: Poly Pizza models come from the Google Poly\n              archive and their scale and origins are arbitrary\n            - About 69% of the catalogue is CC-BY, which REQUIRES crediting the creator. The ready-formatted\n              attribution string is returned by download_polypizza_model() and is also stored on the imported\n              object as the custom property polypizza_attribution, so tell the user about it when the model\n              is CC-BY. Filter with licence=\"CC0\" if you want models that need no credit.\n        4. Hyper3D(Rodin)\n            Hyper3D Rodin is good at generating 3D models for single item.\n            So don't try to:\n            1. Generate the whole scene with one shot\n            2. Generate ground using Hyper3D\n            3. Generate parts of the items separately and put them together afterwards\n\n            Use get_hyper3d_status() to verify its status\n            If Hyper3D is enabled:\n            - For objects/models, do the following steps:\n                1. Create the model generation task\n                    - Use generate_hyper3d_model_via_images() if image(s) is/are given\n                    - Use generate_hyper3d_model_via_text() if generating 3D asset using text prompt\n                    If key type is free_trial and insufficient balance error returned, tell the user that the free trial key can only generated limited models everyday, they can choose to:\n                    - Wait for another day and try again\n                    - Go to hyper3d.ai to find out how to get their own API key\n                    - Go to fal.ai to get their own private API key\n                2. Poll the status\n                    - Use poll_rodin_job_status() to check if the generation task has completed or failed\n                3. Import the asset\n                    - Use import_generated_asset() to import the generated GLB model the asset\n                4. After importing the asset, ALWAYS check the world_bounding_box of the imported mesh, and adjust the mesh's location and size\n                    Adjust the imported mesh's location, scale, rotation, so that the mesh is on the right spot.\n\n                You can reuse assets previous generated by running python code to duplicate the object, without creating another generation task.\n        5. Hunyuan3D\n            Hunyuan3D is good at generating 3D models for single item.\n            So don't try to:\n            1. Generate the whole scene with one shot\n            2. Generate ground using Hunyuan3D\n            3. Generate parts of the items separately and put them together afterwards\n\n            Use get_hunyuan3d_status() to verify its status\n            If Hunyuan3D is enabled:\n                if Hunyuan3D mode is \"OFFICIAL_API\":\n                    - For objects/models, do the following steps:\n                        1. Create the model generation task\n                            - Use generate_hunyuan3d_model by providing either a **text description** OR an **image(local or urls) reference**.\n                            - Go to cloud.tencent.com out how to get their own SecretId and SecretKey\n                        2. Poll the status\n                            - Use poll_hunyuan_job_status() to check if the generation task has completed or failed\n                        3. Import the asset\n                            - Use import_generated_asset_hunyuan() with a ResultFile3Ds URL (prefer .glb, else .zip/.obj)\n                    if Hunyuan3D mode is \"LOCAL_API\":\n                        - For objects/models, do the following steps:\n                        1. Create the model generation task\n                            - Use generate_hunyuan3d_model if image (local or urls)  or text prompt is given and import the asset\n\n                You can reuse assets previous generated by running python code to duplicate the object, without creating another generation task.\n\n    3. Always check the world_bounding_box for each item so that:\n        - Ensure that all objects that should not be clipping are not clipping.\n        - Items have right spatial relationship.\n    \n    4. Recommended asset source priority:\n        - For specific existing objects: First try Sketchfab, then PolyHaven\n        - For stylised or low-poly game assets: First try Poly Pizza, then Sketchfab\n        - For generic objects/furniture: First try PolyHaven, then Sketchfab\n        - For custom or unique items not available in any libraries: Use Hyper3D Rodin or Hunyuan3D\n        - For environment lighting: Use PolyHaven HDRIs\n        - For materials/textures: Use PolyHaven textures\n\n    Only fall back to scripting when:\n    - PolyHaven, Sketchfab, Poly Pizza, Hyper3D, and Hunyuan3D are all disabled\n    - A simple primitive is explicitly requested\n    - No suitable asset exists in any of the libraries\n    - Hyper3D Rodin or Hunyuan3D failed to generate the desired asset\n    - The task specifically requires a basic material/color\n\n    **Best Practices:**\n    - Always take a screenshot after completing a task to verify the visual result\n    - Always call get_scene_info() after completing a task to verify the changes worked\n    - When executing multiple operations, take intermediate screenshots to confirm each step\n    - If something looks wrong in the screenshot or scene info, investigate and fix before proceeding\n\n    **Writing code that survives the user's Blender version and language:**\n    - Read `blender_version` from get_addon_status() before using version-sensitive APIs\n    - Look shader nodes up by type, not by name: `nodes[\"Principled BSDF\"]` is None on a\n      localized (non-English) Blender UI\n    - Never hardcode enum identifiers; read the valid values from `bl_rna` first. `render.engine`\n      is the exception - RNA under-reports it, so read the current value or assign inside\n      `try/except TypeError` and use the identifiers listed in the error\n    - Set colors on shader node inputs; `material.diffuse_color` is viewport-only\n";
+pub const ASSET_CREATION_STRATEGY: &str = "When creating 3D content in Blender, always start by checking if integrations are available:\n\n    0. Before anything, always check the scene from get_scene_info()\n    \n    **IMPORTANT: Visual Verification**\n    - Use get_viewport_screenshot() BEFORE making changes to see the current state\n    - Use get_viewport_screenshot() AFTER executing code or importing assets to verify the result\n    - This helps confirm your changes worked as expected and catch any visual issues\n\n    **IMPORTANT: Trajectory feedback**\n    - When the user accepts a result (\"looks good\", \"keep that\"), call record_trajectory_feedback(feedback=\"accept\")\n    - When they reject or ask to undo, call record_trajectory_feedback(feedback=\"reject\" or \"undo\")\n    - When they correct you (\"too dark\", \"make it taller\"), call record_trajectory_feedback(feedback=\"correction\", correction_text=<their correction>)\n    1. First use the following tools to verify if the following integrations are enabled:\n        1. PolyHaven\n            Use get_polyhaven_status() to verify its status\n            If PolyHaven is enabled:\n            - For objects/models: Use download_polyhaven_asset() with asset_type=\"models\"\n            - For materials/textures: Use download_polyhaven_asset() with asset_type=\"textures\"\n            - For environment lighting: Use download_polyhaven_asset() with asset_type=\"hdris\"\n        2. Sketchfab\n            Sketchfab is good at Realistic models, and has a wider variety of models than PolyHaven.\n            Use get_sketchfab_status() to verify its status\n            If Sketchfab is enabled:\n            - For objects/models: First search using search_sketchfab_models() with your query\n            - Then download specific models using download_sketchfab_model() with the UID\n            - Note that only downloadable models can be accessed, and API key must be properly configured\n            - Sketchfab has a wider variety of models than PolyHaven, especially for specific subjects\n        3. Poly Pizza\n            Poly Pizza is best for stylised, low-poly game assets (it includes the rescued Google Poly archive).\n            Everything on it is free under CC0 or CC-BY, every model is a single self-contained GLB, and the\n            geometry is much lighter than Sketchfab's - prefer it when the scene wants a consistent stylised\n            look, or when many props are needed without heavy meshes.\n            Use get_polypizza_status() to verify its status\n            If Poly Pizza is enabled:\n            - For objects/models: First search using search_polypizza_models(), optionally filtering by\n              category (e.g. \"Animals\", \"Furniture & Decor\"), licence (\"CC0\" or \"CC-BY\"), or animated=True\n            - Then import a specific model using download_polypizza_model() with its ID, passing\n              normalize_size=True and a real-world target_size: Poly Pizza models come from the Google Poly\n              archive and their scale and origins are arbitrary\n            - About 69% of the catalogue is CC-BY, which REQUIRES crediting the creator. The ready-formatted\n              attribution string is returned by download_polypizza_model() and is also stored on the imported\n              object as the custom property polypizza_attribution, so tell the user about it when the model\n              is CC-BY. Filter with licence=\"CC0\" if you want models that need no credit.\n        4. BlenderKit\n            BlenderKit has the largest library of the lot: photoscanned props, furniture, materials\n            and HDRs. Free assets need no account; private and paid ones need a BlenderKit API key\n            (BLENDERKIT_API_KEY env var or the add-on preferences).\n            Use get_blenderkit_status() to verify its status\n            If BlenderKit is enabled:\n            - For objects/models: first search with search_blenderkit_assets() (asset_type=\"model\",\n              free_only=True by default), preview with get_blenderkit_asset_preview(), then import\n              with download_blenderkit_asset() passing target_size in metres (a chair is ~1.0,\n              a car ~4.5)\n            - For materials: search with asset_type=\"material\", then import with\n              download_blenderkit_asset(); select the target mesh objects first so the material\n              is applied to them, otherwise it waits in the material list by name\n            - For environment lighting: search with asset_type=\"hdr\", then import with\n              download_blenderkit_asset() (resolution=\"2K\" by default, up to \"8K\")\n            - Unlike Poly Haven this library is NOT all-CC0: every result carries its own\n              licence, so check it before commercial use and credit the author when required\n        5. Hyper3D(Rodin)\n            Hyper3D Rodin is good at generating 3D models for single item.\n            So don't try to:\n            1. Generate the whole scene with one shot\n            2. Generate ground using Hyper3D\n            3. Generate parts of the items separately and put them together afterwards\n\n            Use get_hyper3d_status() to verify its status\n            If Hyper3D is enabled:\n            - For objects/models, do the following steps:\n                1. Create the model generation task\n                    - Use generate_hyper3d_model_via_images() if image(s) is/are given\n                    - Use generate_hyper3d_model_via_text() if generating 3D asset using text prompt\n                    If key type is free_trial and insufficient balance error returned, tell the user that the free trial key can only generated limited models everyday, they can choose to:\n                    - Wait for another day and try again\n                    - Go to hyper3d.ai to find out how to get their own API key\n                    - Go to fal.ai to get their own private API key\n                2. Poll the status\n                    - Use poll_rodin_job_status() to check if the generation task has completed or failed\n                3. Import the asset\n                    - Use import_generated_asset() to import the generated GLB model the asset\n                4. After importing the asset, ALWAYS check the world_bounding_box of the imported mesh, and adjust the mesh's location and size\n                    Adjust the imported mesh's location, scale, rotation, so that the mesh is on the right spot.\n\n                You can reuse assets previous generated by running python code to duplicate the object, without creating another generation task.\n        6. Hunyuan3D\n            Hunyuan3D is good at generating 3D models for single item.\n            So don't try to:\n            1. Generate the whole scene with one shot\n            2. Generate ground using Hunyuan3D\n            3. Generate parts of the items separately and put them together afterwards\n\n            Use get_hunyuan3d_status() to verify its status\n            If Hunyuan3D is enabled:\n                if Hunyuan3D mode is \"OFFICIAL_API\":\n                    - For objects/models, do the following steps:\n                        1. Create the model generation task\n                            - Use generate_hunyuan3d_model by providing either a **text description** OR an **image(local or urls) reference**.\n                            - Go to cloud.tencent.com out how to get their own SecretId and SecretKey\n                        2. Poll the status\n                            - Use poll_hunyuan_job_status() to check if the generation task has completed or failed\n                        3. Import the asset\n                            - Use import_generated_asset_hunyuan() with a ResultFile3Ds URL (prefer .glb, else .zip/.obj)\n                    if Hunyuan3D mode is \"LOCAL_API\":\n                        - For objects/models, do the following steps:\n                        1. Create the model generation task\n                            - Use generate_hunyuan3d_model if image (local or urls)  or text prompt is given and import the asset\n\n                You can reuse assets previous generated by running python code to duplicate the object, without creating another generation task.\n\n    3. Always check the world_bounding_box for each item so that:\n        - Ensure that all objects that should not be clipping are not clipping.\n        - Items have right spatial relationship.\n    \n    4. Recommended asset source priority:\n        - For specific existing objects: First try BlenderKit, then Sketchfab, then PolyHaven\n        - For stylised or low-poly game assets: First try Poly Pizza, then Sketchfab\n        - For generic objects/furniture: First try BlenderKit, then PolyHaven\n        - For custom or unique items not available in any libraries: Use Hyper3D Rodin or Hunyuan3D\n        - For environment lighting: Use PolyHaven HDRIs, then BlenderKit HDRs\n        - For materials/textures: Use PolyHaven textures, then BlenderKit materials\n\n    Only fall back to scripting when:\n    - PolyHaven, Sketchfab, Poly Pizza, BlenderKit, Hyper3D, and Hunyuan3D are all disabled\n    - A simple primitive is explicitly requested\n    - No suitable asset exists in any of the libraries\n    - Hyper3D Rodin or Hunyuan3D failed to generate the desired asset\n    - The task specifically requires a basic material/color\n\n    **Best Practices:**\n    - Always take a screenshot after completing a task to verify the visual result\n    - Always call get_scene_info() after completing a task to verify the changes worked\n    - When executing multiple operations, take intermediate screenshots to confirm each step\n    - If something looks wrong in the screenshot or scene info, investigate and fix before proceeding\n\n    **Writing code that survives the user's Blender version and language:**\n    - Read `blender_version` from get_addon_status() before using version-sensitive APIs\n    - Look shader nodes up by type, not by name: `nodes[\"Principled BSDF\"]` is None on a\n      localized (non-English) Blender UI\n    - Never hardcode enum identifiers; read the valid values from `bl_rna` first. `render.engine`\n      is the exception - RNA under-reports it, so read the current value or assign inside\n      `try/except TypeError` and use the identifiers listed in the error\n    - Set colors on shader node inputs; `material.diffuse_color` is viewport-only\n";
 
 #[cfg(test)]
 mod tests {

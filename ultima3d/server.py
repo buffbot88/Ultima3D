@@ -102,6 +102,8 @@ LIVE_TOOLS = frozenset({
     "import_generated_asset", "get_hunyuan3d_status", "generate_hunyuan3d_model",
     "poll_hunyuan_job_status", "import_generated_asset_hunyuan", "export_scene",
     "record_trajectory_feedback",
+    "get_blenderkit_status", "search_blenderkit_assets",
+    "get_blenderkit_asset_preview", "download_blenderkit_asset",
 })
 
 

@@ -27,7 +27,7 @@ Then:
 ```
 cd rust && cargo build --workspace
 # -> target/debug/ultima3d-server.exe + target/debug/ultima3d-tray.exe
-cargo test --workspace   # unit tests + 61-tool parity test (no Blender needed)
+cargo test --workspace   # unit tests + 65-tool parity test (no Blender needed)
 ```
 
 On machines with Visual Studio (including GitHub's `windows-latest` runners)

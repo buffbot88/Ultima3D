@@ -38,7 +38,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 9
+ADDON_PROTOCOL_VERSION = 10
 
 # Per-snapshot object cap for get_world_state_snapshot. Keep in sync with
 # blender_mcp.trajectory.MAX_SNAPSHOT_OBJECTS.
@@ -1158,6 +1158,174 @@ HUNYUAN_API_PROFILES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# BlenderKit (blendkit.com) asset integration.
+#
+# Free assets search and download without an account; a personal API key (from
+# the BlenderKit profile page, the add-on preferences, or the
+# BLENDERKIT_API_KEY env var) unlocks private and paid assets. Unlike Poly
+# Haven, BlenderKit is NOT all-CC0: every result carries its own licence,
+# which search results and imports report back. Query shapes below were
+# verified against the live public API (search/?query=, /assets/<id>/,
+# /downloads/<uuid>/?scene_uuid=).
+# ---------------------------------------------------------------------------
+
+BLENDERKIT_API_BASE = "https://www.blenderkit.com/api/v1"
+BLENDERKIT_SITE = "https://www.blenderkit.com"
+
+BLENDERKIT_HEADERS = dict(REQ_HEADERS)
+BLENDERKIT_HEADERS["User-Agent"] = (
+    "blender-mcp/" + ".".join(str(part) for part in bl_info["version"])
+    + " (+https://github.com/ahujasid/blender-mcp)"
+)
+
+# (connect, read). The read timeout applies per socket read rather than to the
+# whole transfer, so a large .blend never trips it - but a dead connection no
+# longer hangs Blender's main thread indefinitely.
+BLENDERKIT_API_TIMEOUT = (10, 30)
+BLENDERKIT_FILE_TIMEOUT = (10, 60)
+
+BLENDERKIT_CHUNK_SIZE = 1024 * 1024
+
+# Asset kinds this integration searches and imports. BlenderKit also hosts
+# printables, scenes, brushes and node groups; those need different import
+# paths and stay out until someone asks for them.
+BLENDERKIT_ASSET_TYPES = ("model", "material", "hdr")
+
+BLENDERKIT_SEARCH_LIMIT = 20
+BLENDERKIT_SEARCH_MAX_LIMIT = 50
+
+
+# The /downloads/<uuid>/ ticket endpoint refuses requests without one (403
+# "Parameter scene_uuid not set"). It is only usage telemetry, so a fresh
+# random id per download is fine.
+def _blenderkit_scene_uuid():
+    return str(uuid.uuid4())
+
+
+class BlenderKitAPIError(Exception):
+    """A non-2xx from the BlenderKit API, with the status kept."""
+    def __init__(self, status, detail=""):
+        super().__init__(f"HTTP {status}" + (f": {detail}" if detail else ""))
+        self.status = status
+
+
+def _blenderkit_headers(api_key=""):
+    """API headers; the key travels only to blenderkit.com, never to a CDN."""
+    headers = dict(BLENDERKIT_HEADERS)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _blenderkit_build_terms(query, asset_type, free_only):
+    """BlendKit takes filters as terms inside the single `query` parameter.
+
+    `asset_type:model` and `is_free:True` are real server-side filters
+    (verified against the live API); anything else is free-text search.
+    """
+    if asset_type and asset_type != "all" and asset_type not in BLENDERKIT_ASSET_TYPES:
+        raise ValueError(
+            f"Invalid asset type: {asset_type!r}. "
+            f"Must be one of: {', '.join(BLENDERKIT_ASSET_TYPES)}, all")
+    terms = []
+    if asset_type and asset_type != "all":
+        terms.append(f"asset_type:{asset_type}")
+    if free_only:
+        terms.append("is_free:True")
+    if query and query.strip():
+        terms.append(query.strip())
+    return " ".join(terms)
+
+
+def _blenderkit_author_name(author):
+    if not isinstance(author, dict):
+        return "Unknown"
+    full = f"{author.get('firstName') or ''} {author.get('lastName') or ''}".strip()
+    return full or "Unknown"
+
+
+def _blenderkit_summarize(record):
+    """The fields an agent needs to pick an asset, and nothing else."""
+    return {
+        "id": record.get("id"),
+        "name": record.get("displayName") or record.get("name"),
+        "asset_type": record.get("assetType"),
+        "free": bool(record.get("isFree")),
+        "author": _blenderkit_author_name(record.get("author")),
+        "license": record.get("license") or "see asset page",
+        "rating": record.get("ratingsMedian"),
+        "ratings_count": record.get("ratingsCount", 0),
+        "url": record.get("url"),
+    }
+
+
+def _blenderkit_pick_file(files, wanted):
+    """First file whose fileType is in `wanted` (ordered preference)."""
+    by_type = {}
+    for entry in files or []:
+        by_type.setdefault(entry.get("fileType"), entry)
+    for kind in wanted:
+        if kind in by_type:
+            return by_type[kind]
+    return None
+
+
+def _blenderkit_available_types(files):
+    return sorted({entry.get("fileType") for entry in files or []
+                   if entry.get("fileType")})
+
+
+def _blenderkit_api_get_url(url, params, api_key=""):
+    try:
+        response = requests.get(url, params=params,
+                                headers=_blenderkit_headers(api_key),
+                                timeout=BLENDERKIT_API_TIMEOUT)
+    except requests.exceptions.Timeout:
+        raise BlenderKitAPIError(-1, "request timed out")
+    if response.status_code >= 400:
+        raise BlenderKitAPIError(response.status_code, response.text[:200])
+    try:
+        return response.json()
+    except ValueError:
+        raise BlenderKitAPIError(response.status_code, "invalid JSON response")
+
+
+def _blenderkit_api_get(path, params=None, api_key=""):
+    return _blenderkit_api_get_url(f"{BLENDERKIT_API_BASE}/{path}",
+                                    params or {}, api_key)
+
+
+def _blenderkit_resolve_file_url(download_url, api_key=""):
+    """Exchange a files[].downloadUrl ticket for a signed CDN file URL."""
+    data = _blenderkit_api_get_url(
+        download_url, {"scene_uuid": _blenderkit_scene_uuid()}, api_key)
+    paths = data.get("filePaths") or []
+    if data.get("filePath"):
+        return data["filePath"]
+    if paths and paths[0].get("url"):
+        return paths[0]["url"]
+    raise BlenderKitAPIError(-1, "download ticket had no file URL")
+
+
+def _blenderkit_download_file(url, dest_path):
+    """Stream bytes to dest_path. The signed URL carries its own auth, so no
+    Authorization header is sent (the key must never leak to a CDN host)."""
+    try:
+        response = requests.get(url, headers=dict(BLENDERKIT_HEADERS), stream=True,
+                                timeout=BLENDERKIT_FILE_TIMEOUT)
+    except requests.exceptions.Timeout:
+        raise BlenderKitAPIError(-1, "download timed out")
+    if response.status_code >= 400:
+        raise BlenderKitAPIError(response.status_code,
+                                 getattr(response, "text", "")[:200])
+    with open(dest_path, "wb") as handle:
+        for chunk in response.iter_content(chunk_size=BLENDERKIT_CHUNK_SIZE):
+            if chunk:
+                handle.write(chunk)
+    return dest_path
+
+
 def hunyuan_api_profile(international_pro: bool) -> dict:
     """Return a copy of the Tencent Cloud API profile for the selected account type."""
     profile = HUNYUAN_API_PROFILES["international_pro" if international_pro else "mainland"]
@@ -1497,6 +1665,7 @@ class BlenderMCPServer:
             "get_polyhaven_status": self.get_polyhaven_status,
             "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
+            "get_blenderkit_status": self.get_blenderkit_status,
             "get_polypizza_status": self.get_polypizza_status,
             "get_hunyuan3d_status": self.get_hunyuan3d_status,
             "export_scene": self.export_scene,
@@ -1512,6 +1681,15 @@ class BlenderMCPServer:
                 "set_texture": self.set_texture,
             }
             handlers.update(polyhaven_handlers)
+
+        # Add BlenderKit handlers only if enabled
+        if bpy.context.scene.blendermcp_use_blenderkit:
+            blenderkit_handlers = {
+                "search_blenderkit_assets": self.search_blenderkit_assets,
+                "get_blenderkit_asset_preview": self.get_blenderkit_asset_preview,
+                "download_blenderkit_asset": self.download_blenderkit_asset,
+            }
+            handlers.update(blenderkit_handlers)
 
         # Add Hyper3d handlers only if enabled
         if bpy.context.scene.blendermcp_use_hyper3d:
@@ -4093,6 +4271,358 @@ class BlenderMCPServer:
             return {"error": f"Failed to download model: {str(e)}"}
     #endregion
 
+    #region BlenderKit API
+    def _get_blenderkit_api_key(self):
+        return self._get_config_value(
+            "blendermcp_blenderkit_api_key",
+            "blenderkit_api_key",
+            "BLENDERKIT_API_KEY",
+        )
+
+    def get_blenderkit_status(self):
+        """Get the current status of the BlenderKit integration."""
+        enabled = bpy.context.scene.blendermcp_use_blenderkit
+        api_key = self._get_blenderkit_api_key()
+
+        if not enabled:
+            return {
+                "enabled": False,
+                "message": """BlenderKit integration is currently disabled. To enable it:
+                            1. In the 3D Viewport, find the MCP for Blender panel in the sidebar (press N if hidden)
+                            2. Check the 'Use assets from BlenderKit' checkbox
+                            3. Free assets work with no key; for private/paid assets enter your BlenderKit API Key (profile page on blenderkit.com)
+                            4. Restart the connection to Claude"""
+            }
+        if api_key:
+            try:
+                self._blenderkit_me(api_key)
+            except BlenderKitAPIError as e:
+                if e.status == 401:
+                    return {
+                        "enabled": False,
+                        "message": "BlenderKit API key was rejected (401). Check the key on your BlenderKit profile page."
+                    }
+                return {
+                    "enabled": True,
+                    "message": f"BlenderKit is enabled, but the key could not be validated ({e}). Free assets still work.",
+                }
+            return {
+                "enabled": True,
+                "message": "BlenderKit integration is enabled and the API key is valid.",
+            }
+        return {
+            "enabled": True,
+            "message": "BlenderKit is enabled without an API key: free assets search and download, private/paid ones need a key.",
+        }
+
+    def _blenderkit_me(self, api_key):
+        return _blenderkit_api_get("me/", {}, api_key)
+
+    def search_blenderkit_assets(self, query=None, asset_type="all",
+                                 free_only=True, limit=20):
+        """Search BlenderKit's library of models, materials and HDRs."""
+        try:
+            try:
+                terms = _blenderkit_build_terms(query, asset_type, free_only)
+            except ValueError as e:
+                return {"error": str(e)}
+            try:
+                limit = int(limit) if limit else BLENDERKIT_SEARCH_LIMIT
+            except (TypeError, ValueError):
+                limit = BLENDERKIT_SEARCH_LIMIT
+            limit = max(1, min(limit, BLENDERKIT_SEARCH_MAX_LIMIT))
+            try:
+                data = _blenderkit_api_get(
+                    "search/",
+                    {"query": terms, "dict_parameters": 1, "page_size": limit},
+                    self._get_blenderkit_api_key())
+            except BlenderKitAPIError as e:
+                if e.status == 429:
+                    return {"error": "BlenderKit is rate limiting searches from this address. Wait a minute and try again."}
+                return {"error": f"BlenderKit search failed: {e}"}
+            results = data.get("results") or []
+            return {
+                "assets": [_blenderkit_summarize(record) for record in results],
+                "total_count": data.get("count", len(results)),
+                "returned_count": len(results),
+                "query": terms or None,
+                # BlenderKit licences vary per asset (this library is NOT all
+                # CC0 like Poly Haven), so the licence rides along on every
+                # result rather than living in one place nobody re-reads.
+                "note": "Check each asset's licence before commercial use.",
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_blenderkit_asset_preview(self, asset_id):
+        """Fetch an asset's thumbnail so it can be looked at before downloading."""
+        try:
+            if not asset_id:
+                return {"error": "asset_id is required (copy the id from search_blenderkit_assets)"}
+            try:
+                record = _blenderkit_api_get(f"assets/{asset_id}/", {},
+                                             self._get_blenderkit_api_key())
+            except BlenderKitAPIError as e:
+                if e.status == 404:
+                    return {"error": f"No BlenderKit asset with id {asset_id!r}"}
+                return {"error": f"BlenderKit lookup failed: {e}"}
+            thumbnail_url = record.get("thumbnailMiddleUrl")
+            if not thumbnail_url:
+                return {"error": f"No thumbnail is published for '{record.get('displayName') or asset_id}'"}
+            response = requests.get(thumbnail_url, headers=dict(BLENDERKIT_HEADERS),
+                                    timeout=BLENDERKIT_API_TIMEOUT)
+            if response.status_code >= 400:
+                return {"error": f"Failed to fetch the thumbnail: HTTP {response.status_code}"}
+            content_type = getattr(response, "headers", {}).get("Content-Type", "")
+            image_format = "png" if "png" in content_type else "jpeg"
+            return {
+                "success": True,
+                "image_data": base64.b64encode(response.content).decode("ascii"),
+                "format": image_format,
+                "asset_id": asset_id,
+                "name": record.get("displayName") or record.get("name") or asset_id,
+                "author": _blenderkit_author_name(record.get("author")),
+                "license": record.get("license") or "see asset page",
+                "url": record.get("url"),
+            }
+        except Exception as e:
+            traceback.print_exc()
+            return {"error": f"Failed to get asset preview: {str(e)}"}
+
+    def download_blenderkit_asset(self, asset_id, asset_type="model",
+                                  resolution="2K", target_size=None):
+        """Download a BlenderKit asset and import it into the scene.
+
+        Models arrive as linked collections/objects from the asset's own .blend
+        (glTF fallback when this Blender cannot open it). Materials are appended
+        and applied to the selected mesh objects, or reported by name when
+        nothing is selected. HDRs are downloaded and set as the scene's world.
+        Pass target_size (metres, largest dimension) to normalize a model.
+        """
+        try:
+            if asset_type not in BLENDERKIT_ASSET_TYPES:
+                return {"error": f"Unsupported asset type: {asset_type}. "
+                                 f"Must be one of: {', '.join(BLENDERKIT_ASSET_TYPES)}"}
+            if not asset_id:
+                return {"error": "asset_id is required (copy the id from search_blenderkit_assets)"}
+            try:
+                record = _blenderkit_api_get(f"assets/{asset_id}/", {},
+                                             self._get_blenderkit_api_key())
+            except BlenderKitAPIError as e:
+                if e.status == 404:
+                    return {"error": f"No BlenderKit asset with id {asset_id!r}"}
+                return {"error": f"BlenderKit lookup failed: {e}"}
+            files = record.get("files") or []
+            if asset_type == "model":
+                picked = _blenderkit_pick_file(files, ["blend", "gltf"])
+                wanted = "blend or gltf"
+            elif asset_type == "material":
+                picked = _blenderkit_pick_file(files, ["blend"])
+                wanted = "blend"
+            else:
+                key = "resolution_" + str(resolution).strip().upper().replace(".", "_")
+                picked = _blenderkit_pick_file(files, [key])
+                wanted = key
+            if not picked or not picked.get("downloadUrl"):
+                return {"error": f"Asset {asset_id!r} has no {wanted} file - "
+                                 f"published types: {', '.join(_blenderkit_available_types(files)) or 'none'}"}
+            if record.get("isFree") is False and not self._get_blenderkit_api_key():
+                return {"error": f"'{record.get('displayName') or asset_id}' is not free; "
+                                 "enter a BlenderKit API key to download it."}
+            dest_dir = tempfile.mkdtemp(prefix="blender_mcp_blenderkit_")
+            try:
+                file_url = _blenderkit_resolve_file_url(
+                    picked["downloadUrl"], self._get_blenderkit_api_key())
+            except BlenderKitAPIError as e:
+                shutil.rmtree(dest_dir, ignore_errors=True)
+                return {"error": f"BlenderKit would not issue this download ({e}). "
+                                 "Private/paid assets need an API key with access."}
+            filename = os.path.basename(picked.get("filename") or "asset") or "asset"
+            dest_path = os.path.join(dest_dir, filename)
+            try:
+                _blenderkit_download_file(file_url, dest_path)
+            except BlenderKitAPIError as e:
+                shutil.rmtree(dest_dir, ignore_errors=True)
+                return {"error": f"Failed to download asset: {e}"}
+            try:
+                if asset_type == "model":
+                    result = self._blenderkit_import_model(
+                        record, dest_path, filename, target_size)
+                elif asset_type == "material":
+                    result = self._blenderkit_import_material(record, dest_path)
+                else:
+                    result = self._blenderkit_import_hdr(record, dest_path)
+            finally:
+                shutil.rmtree(dest_dir, ignore_errors=True)
+            return result
+        except Exception as e:
+            traceback.print_exc()
+            return {"error": f"Failed to download asset: {str(e)}"}
+
+    def _blenderkit_import_model(self, record, dest_path, filename, target_size):
+        """Append a model .blend's collection (or import its glTF)."""
+        name = record.get("displayName") or record.get("name") or "asset"
+        asset_id = record.get("id")
+        is_blend = dest_path.lower().endswith(".blend")
+        before = {obj.name for obj in bpy.data.objects}
+        try:
+            if is_blend:
+                written_by = _polyhaven_blend_version(dest_path)
+                if written_by and written_by > bpy.app.version[:2]:
+                    raise RuntimeError("written by Blender %d.%d" % written_by)
+                with bpy.data.libraries.load(dest_path, link=False) as (data_from, data_to):
+                    available = list(data_from.collections)
+                    wanted = next(
+                        (candidate for candidate in
+                         (record.get("displayName"), record.get("name"))
+                         if candidate in available), None)
+                    if wanted:
+                        data_to.collections = [wanted]
+                    else:
+                        # BlenderKit authors organise .blends freely, so unlike
+                        # Poly Haven there is usually no slug-named collection
+                        # to key off. Appending loose objects keeps structure-less
+                        # files working instead of importing nothing at all.
+                        data_to.objects = [o for o in data_from.objects
+                                           if not o.startswith(".")]
+                for collection in data_to.collections:
+                    if collection is not None:
+                        bpy.context.scene.collection.children.link(collection)
+                if not data_to.collections:
+                    for obj in data_to.objects:
+                        if obj is not None:
+                            bpy.context.collection.objects.link(obj)
+            else:
+                bpy.ops.import_scene.gltf(filepath=dest_path)
+        except Exception as blend_error:
+            if not is_blend:
+                return {"error": f"Failed to import model: {blend_error}"}
+            return {"error": f"Model {name!r} is {blend_error}, which this Blender "
+                             "cannot open. Try a newer Blender and run it again."}
+        imported = [obj for obj in bpy.data.objects if obj.name not in before]
+        if not imported:
+            return {"error": f"Imported {name!r} but nothing arrived in the scene."}
+        self._blenderkit_pack_images(imported)
+        for obj in imported:
+            with suppress(Exception):
+                obj["blenderkit_asset"] = asset_id or ""
+        scale_note = ""
+        if target_size is not None:
+            try:
+                scale_note = self._blenderkit_normalize(imported, float(target_size))
+            except (TypeError, ValueError):
+                scale_note = " target_size was not a number, so no scaling was applied."
+        return {
+            "success": True,
+            "message": f"Model {name!r} imported successfully.{scale_note}",
+            "imported_objects": [obj.name for obj in imported],
+            "author": _blenderkit_author_name(record.get("author")),
+            "license": record.get("license") or "see asset page",
+            "url": record.get("url"),
+        }
+
+    def _blenderkit_import_material(self, record, dest_path):
+        """Append a material .blend's materials; apply the first to the selection."""
+        name = record.get("displayName") or record.get("name") or "asset"
+        with bpy.data.libraries.load(dest_path, link=False) as (data_from, data_to):
+            candidates = [m for m in data_from.materials if not m.startswith(".")]
+            if not candidates:
+                return {"error": f"Material {name!r} holds no materials to append."}
+            data_to.materials = candidates
+        materials = [m for m in data_to.materials if m is not None]
+        if not materials:
+            return {"error": f"Material {name!r} held no importable materials."}
+        applied_to = []
+        for obj in bpy.context.selected_objects:
+            if obj.type != "MESH":
+                continue
+            if obj.data.materials:
+                obj.data.materials[0] = materials[0]
+            else:
+                obj.data.materials.append(materials[0])
+            applied_to.append(obj.name)
+        self._blenderkit_pack_images([
+            obj for obj in bpy.context.scene.objects if obj.name in applied_to])
+        note = (f" Applied to: {', '.join(applied_to)}." if applied_to
+                else " Nothing was selected, so it waits in the material list - "
+                     "select mesh objects and run it again to apply it.")
+        return {
+            "success": True,
+            "message": f"Material {materials[0].name!r} appended.{note}",
+            "material": materials[0].name,
+            "all_materials": [m.name for m in materials],
+            "author": _blenderkit_author_name(record.get("author")),
+            "license": record.get("license") or "see asset page",
+            "url": record.get("url"),
+        }
+
+    def _blenderkit_import_hdr(self, record, dest_path):
+        """Download an HDRI and set it up as the scene's world."""
+        name = record.get("displayName") or record.get("name") or "hdri"
+        world = bpy.data.worlds.new(name=f"{name} World")
+        world.use_nodes = True
+        nodes = world.node_tree.nodes
+        links = world.node_tree.links
+        nodes.clear()
+        output = nodes.new(type="ShaderNodeOutputWorld")
+        background = nodes.new(type="ShaderNodeBackground")
+        env_tex = nodes.new(type="ShaderNodeTexEnvironment")
+        links.new(background.outputs["Background"], output.inputs["Surface"])
+        links.new(env_tex.outputs["Color"], background.inputs["Color"])
+        image = bpy.data.images.load(dest_path, check_existing=True)
+        image.name = name
+        image.pack()
+        env_tex.image = image
+        bpy.context.scene.world = world
+        return {
+            "success": True,
+            "message": f"HDRI {name!r} downloaded and set as the world.",
+            "world": world.name,
+            "author": _blenderkit_author_name(record.get("author")),
+            "license": record.get("license") or "see asset page",
+            "url": record.get("url"),
+        }
+
+    def _blenderkit_pack_images(self, objects):
+        """Pack image textures so deleting the temp dir never breaks the scene."""
+        for obj in objects:
+            for slot in getattr(obj, "material_slots", []):
+                if slot.material is None or not slot.material.use_nodes:
+                    continue
+                for node in slot.material.node_tree.nodes:
+                    if node.type == "TEX_IMAGE" and node.image and not node.image.packed_file:
+                        with suppress(Exception):
+                            node.image.pack()
+
+    def _blenderkit_normalize(self, objects, target_size):
+        """Scale root objects so the largest dimension equals target_size."""
+        meshes = [o for o in objects if o.type == "MESH"]
+        if not meshes or target_size <= 0:
+            return ""
+        all_min = mathutils.Vector((float("inf"),) * 3)
+        all_max = mathutils.Vector((float("-inf"),) * 3)
+        for mesh_obj in meshes:
+            for corner in mesh_obj.bound_box:
+                world_corner = mesh_obj.matrix_world @ mathutils.Vector(corner)
+                all_min.x = min(all_min.x, world_corner.x)
+                all_min.y = min(all_min.y, world_corner.y)
+                all_min.z = min(all_min.z, world_corner.z)
+                all_max.x = max(all_max.x, world_corner.x)
+                all_max.y = max(all_max.y, world_corner.y)
+                all_max.z = max(all_max.z, world_corner.z)
+        dimensions = [all_max.x - all_min.x, all_max.y - all_min.y, all_max.z - all_min.z]
+        biggest = max(dimensions)
+        if biggest <= 0:
+            return ""
+        factor = target_size / biggest
+        roots = [o for o in meshes if o.parent is None]
+        for root in roots:
+            root.scale = (root.scale.x * factor, root.scale.y * factor,
+                          root.scale.z * factor)
+        bpy.context.view_layer.update()
+        return f" Scaled by {factor:.4f} so the largest dimension is {target_size:g}m."
+    #endregion
+
     #region Poly Pizza API
     def get_polypizza_status(self):
         """Get the current status of Poly Pizza integration"""
@@ -4896,8 +5426,14 @@ class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
         description="Persistent Hunyuan3D SecretId",
         default=""
     )
+    blenderkit_api_key: bpy.props.StringProperty(
+        name="BlenderKit API Key",
+        subtype="PASSWORD",
+        description="Persistent BlenderKit API Key (only needed for private/paid assets)",
+        default=""
+    )
     hunyuan3d_secret_key: bpy.props.StringProperty(
-        name="Hunyuan3D SecretKey",
+        name="Hunyuan 3D SecretKey",
         subtype="PASSWORD",
         description="Persistent Hunyuan3D SecretKey",
         default=""
@@ -4940,6 +5476,7 @@ class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
         cred_box.prop(self, "sketchfab_api_key", text="Sketchfab API Key")
         cred_box.prop(self, "polypizza_api_key", text="Poly Pizza API Key")
         cred_box.prop(self, "hyper3d_api_key", text="Hyper3D API Key")
+        cred_box.prop(self, "blenderkit_api_key", text="BlenderKit API Key")
         cred_box.prop(self, "hunyuan3d_secret_id", text="Hunyuan3D SecretId")
         cred_box.prop(self, "hunyuan3d_secret_key", text="Hunyuan3D SecretKey")
         cred_box.prop(self, "hunyuan3d_api_url", text="Hunyuan3D API URL")
@@ -4998,6 +5535,17 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
                 col.prop(prefs, "sketchfab_api_key", text="API Key")
             else:
                 col.prop(scene, "blendermcp_sketchfab_api_key", text="API Key")
+
+        sub = self._integration_header(
+            layout, scene, "blendermcp_use_blenderkit", "BlenderKit", 'IMPORT')
+        if sub:
+            col = sub.column(align=True)
+            col.label(text="Free models, materials and HDRs (licences vary)")
+            col.operator("wm.url_open", text="blenderkit.com", icon='URL').url = BLENDERKIT_SITE
+            if prefs:
+                col.prop(prefs, "blenderkit_api_key", text="API Key")
+            else:
+                col.prop(scene, "blendermcp_blenderkit_api_key", text="API Key")
 
         sub = self._integration_header(
             layout, scene, "blendermcp_use_polypizza", "Poly Pizza", 'MESH_ICOSPHERE')
@@ -5252,6 +5800,19 @@ def register():
         max=10.0,
     )
 
+    bpy.types.Scene.blendermcp_use_blenderkit = bpy.props.BoolProperty(
+        name="Use BlenderKit",
+        description="Enable BlenderKit asset integration",
+        default=False
+    )
+
+    bpy.types.Scene.blendermcp_blenderkit_api_key = bpy.props.StringProperty(
+        name="BlenderKit API Key",
+        subtype="PASSWORD",
+        description="API Key from your BlenderKit profile (only needed for private/paid assets)",
+        default=""
+    )
+
     bpy.types.Scene.blendermcp_hunyuan3d_texture = bpy.props.BoolProperty(
         name="Generate Texture",
         description="Whether to generate texture for the 3D model",
@@ -5325,6 +5886,8 @@ def unregister():
     del bpy.types.Scene.blendermcp_hyper3d_api_key
     del bpy.types.Scene.blendermcp_use_sketchfab
     del bpy.types.Scene.blendermcp_sketchfab_api_key
+    del bpy.types.Scene.blendermcp_use_blenderkit
+    del bpy.types.Scene.blendermcp_blenderkit_api_key
     del bpy.types.Scene.blendermcp_use_polypizza
     del bpy.types.Scene.blendermcp_polypizza_api_key
     del bpy.types.Scene.blendermcp_use_hunyuan3d

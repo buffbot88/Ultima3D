@@ -67,7 +67,7 @@ def _extract_tool_params(kwargs: dict, capture_code: bool) -> dict:
     capture_keys = [
         'asset_id', 'asset_type', 'resolution', 'file_format',  # Polyhaven
         'object_name', 'texture_id',  # set_texture
-        'uid', 'target_size',  # Sketchfab
+        'uid', 'target_size',  # Sketchfab (+ target_size for BlenderKit)
         'text_prompt', 'bbox_condition',  # Hyper3D
         'input_image_paths', 'input_image_urls',  # Hyper3D images
         'input_image_url',  # Hunyuan

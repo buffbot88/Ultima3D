@@ -409,6 +409,41 @@ struct DownloadSketchfabArgs {
     user_prompt: Option<String>,
 }
 
+fn default_blenderkit_asset_type() -> String {
+    "model".to_string()
+}
+
+fn default_resolution_2k() -> String {
+    "2K".to_string()
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SearchBlenderkitArgs {
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default = "default_asset_type_all")]
+    asset_type: String,
+    #[serde(default = "default_true")]
+    free_only: bool,
+    #[serde(default = "default_search_limit")]
+    limit: i64,
+    #[serde(default)]
+    user_prompt: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DownloadBlenderkitArgs {
+    asset_id: String,
+    #[serde(default = "default_blenderkit_asset_type")]
+    asset_type: String,
+    #[serde(default = "default_resolution_2k")]
+    resolution: String,
+    #[serde(default)]
+    target_size: Option<f64>,
+    #[serde(default)]
+    user_prompt: Option<String>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchPolypizzaArgs {
     #[serde(default)]
@@ -1337,6 +1372,65 @@ impl Ultima3d {
             "get_polypizza_status",
             " Poly Pizza is good at stylised, low-poly game assets. Everything is free under CC0 or CC-BY, and models are far lighter geometry than Sketchfab's.",
             "Poly Pizza",
+        ))
+    }
+
+    #[tool(description = "Check if BlenderKit integration is enabled in Blender.")]
+    async fn get_blenderkit_status(
+        &self,
+        Parameters(args): Parameters<UserPromptArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let _ = args;
+        Self::live_text(live::addon_probe_text(
+            "get_blenderkit_status",
+            "BlenderKit is good at photoscanned props, furniture and materials, and has a far larger library than Poly Haven.",
+            "BlenderKit",
+        ))
+    }
+
+    #[tool(description = "Search BlenderKit's library of free models, materials and HDRs.")]
+    async fn search_blenderkit_assets(
+        &self,
+        Parameters(args): Parameters<SearchBlenderkitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        Self::live_text(live::search_blenderkit_text(
+            args.query.as_deref(),
+            &args.asset_type,
+            args.free_only,
+            args.limit,
+        ))
+    }
+
+    #[tool(description = "Get a preview thumbnail of a BlenderKit asset by its id.")]
+    async fn get_blenderkit_asset_preview(
+        &self,
+        Parameters(args): Parameters<AssetPreviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match live::blenderkit_preview(&args.asset_id) {
+            Ok((bytes, format, _name, _author)) => {
+                if live::image_output_mode() == "inline" {
+                    Self::live_image_or_note(bytes, format, String::new())
+                } else {
+                    match live::blenderkit_preview_note(&args.asset_id) {
+                        Ok(note) => Self::live_text(note),
+                        Err(e) => Self::live_text(e),
+                    }
+                }
+            }
+            Err(e) => Self::live_text(e),
+        }
+    }
+
+    #[tool(description = "Download a BlenderKit asset by its id and import it into Blender.")]
+    async fn download_blenderkit_asset(
+        &self,
+        Parameters(args): Parameters<DownloadBlenderkitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        Self::live_text(live::download_blenderkit_text(
+            &args.asset_id,
+            &args.asset_type,
+            &args.resolution,
+            args.target_size,
         ))
     }
 

@@ -67,7 +67,7 @@ def main():
         _, status = request(f"{base}/status")
         check("session budget is reported", "session" in status and
               status["session"]["limit_minutes"] == 5.0, str(status.get("session")))
-        check("status counts the full surface", status.get("tools") == 61, str(status.get("tools")))
+        check("status counts the full surface", status.get("tools") == 65, str(status.get("tools")))
 
         _, listed = request(f"{base}/tools")
         names = {tool["name"] for tool in listed.get("tools", [])}

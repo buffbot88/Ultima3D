@@ -165,7 +165,7 @@ backdrop at runtime.
 
 ```bash
 python -m ultima3d.skill call <tool> '<json>'   # one tool call (boots daemon+dashboard first time)
-python -m ultima3d.skill tools                  # all 61 tools
+python -m ultima3d.skill tools                  # all 65 tools
 python -m ultima3d.skill status                 # daemon + session budget
 python -m ultima3d.skill stop                  # stop daemon + Blender worker
 python -m ultima3d.server                      # stdio MCP (what an MCP client launches)
@@ -199,8 +199,9 @@ project). Run from your game/project folder, not from this checkout.
 
 ## 🛠️ Tools
 
-All **61 tools + 1 prompt** (`asset_creation_strategy`) on the one server,
-over stdio MCP or the daemon — 18 procedural/pipeline, 32 live-Blender,
+All **65 tools + 1 prompt** (`asset_creation_strategy`) on the one server,
+over stdio MCP or the daemon — 18 procedural/pipeline, 36 live-Blender
+(incl. BlenderKit: search + preview + import free models/materials/HDRs),
 6 Godot, 5 GIMP:
 
 | Tool | Purpose |
@@ -461,7 +462,7 @@ output/                  YOUR renders/exports when invoking from this checkout
 
 A plain `git clone` is all you need — no submodules (vendored skills are plain
 files; the updater re-clones on demand). GitHub CI builds the Rust workspace
-and runs `cargo test`, plus a Python-host job (61-tool parity, session budget,
+and runs `cargo test`, plus a Python-host job (65-tool parity, session budget,
 skill package, daemon round-trip; no Blender/Godot required). Releases are cut
 from `v*` tags with both Windows binaries attached. The live tools were ported
 from [mcp-for-blender](https://github.com/ahujasid/mcp-for-blender); upstream
@@ -535,7 +536,7 @@ of geometry.
 - **v0.3** — export-only finalize (decimation never touches the scene, idempotent
   reruns) + bounded worker calls.
 - **v0.4** — blueprint compiler: v1 contract, `compile_blueprint` + `check_assertions`.
-- **v0.5** — Rust MCP host: 61-tool surface as one binary; only in-editor code
+- **v0.5** — Rust MCP host: 65-tool surface as one binary; only in-editor code
   stays native.
 - **v0.6** — full Rust switch + tray port + CI/release workflows.
 - **v0.7** — Python host restored (no build step), loopback daemon + Freebuff
