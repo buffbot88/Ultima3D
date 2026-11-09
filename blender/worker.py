@@ -187,7 +187,8 @@ def _simple_mat(name, base_color, roughness=0.6, metallic=0.0, texture=None,
 # Preset names accepted by the material spec's `texture` key. Unknown names
 # fall back to flat color with a warning, never a crashed build.
 TEXTURE_PRESETS = ("wood_grain", "bark", "stone", "mossy", "grass_blend",
-                   "worn_metal")
+                   "worn_metal", "fabric", "plaster", "concrete",
+                   "brushed_metal", "leather", "soil")
 
 
 def _mat_fresh(mat):
@@ -206,19 +207,55 @@ def _mat_fresh(mat):
     return nodes, links, princ
 
 
-def _tex_chain(mat, tex_node_type, seed=0, scale=3.0):
-    """TexCoord -> Mapping -> texture node; seed offsets mapping for variation."""
-    nodes, links, princ = _mat_fresh(mat)
+def _tex_scale_v(scale):
+    """Mapping scale as a 3-vector; scalar stays uniform, tuple stretches."""
+    if isinstance(scale, (list, tuple)):
+        return tuple(float(s) for s in scale)
+    return (float(scale),) * 3
+
+
+def _tex_layer(nodes, links, tex_node_type, scale=3.0, seed=0):
+    """One more TexCoord -> Mapping -> texture node on an existing chain."""
     tex_coord = nodes.new("ShaderNodeTexCoord")
     mapping = nodes.new("ShaderNodeMapping")
-    mapping.inputs["Scale"].default_value = (float(scale),) * 3
+    mapping.inputs["Scale"].default_value = _tex_scale_v(scale)
     # deterministic per-seed offset (noise/voronoi have no stable seed socket)
     mapping.inputs["Location"].default_value = (float(seed) * 3.7 % 10,
                                                   float(seed) * 7.3 % 10, 0.0)
     tex = nodes.new(tex_node_type)
     links.new(tex_coord.outputs.get("Generated"), mapping.inputs.get("Vector"))
     links.new(mapping.outputs.get("Vector"), tex.inputs.get("Vector"))
+    return tex
+
+
+def _tex_chain(mat, tex_node_type, seed=0, scale=3.0):
+    """TexCoord -> Mapping -> texture node; seed offsets mapping for variation."""
+    nodes, links, princ = _mat_fresh(mat)
+    tex = _tex_layer(nodes, links, tex_node_type, scale, seed)
     return nodes, links, princ, tex
+
+
+def _mix_detail(nodes, links, base_out, detail_out, amount=0.25):
+    """MixRGB that folds fine grain over the base layer; amount is detail weight."""
+    mix = nodes.new("ShaderNodeMixRGB")
+    try:
+        mix.blend_type = "MIX"
+    except AttributeError:
+        pass
+    mix.inputs["Fac"].default_value = max(0.0, min(1.0, float(amount)))
+    links.new(base_out, mix.inputs.get("Color1"))
+    links.new(detail_out, mix.inputs.get("Color2"))
+    return mix
+
+
+def _rough_from(nodes, links, princ, fac_out, lo=0.4, hi=0.9):
+    """Drive Principled Roughness from a factor so light breaks up the surface."""
+    ramp = nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].color = (float(lo),) * 3 + (1.0,)
+    ramp.color_ramp.elements[1].color = (float(hi),) * 3 + (1.0,)
+    links.new(fac_out, ramp.inputs.get("Fac"))
+    links.new(ramp.outputs.get("Color"), princ.inputs.get("Roughness"))
+    return ramp
 
 
 def _ramp(nodes, links, fac_out, c0, c1, pos1=0.5):
@@ -256,59 +293,168 @@ def _apply_procedural(mat, preset, base_color=(0.6, 0.6, 0.6), scale=3.0,
             tex.inputs["Scale"].default_value = 1.0
         except (KeyError, IndexError):
             pass
-        ramp = _ramp(nodes, links, tex.outputs.get("Fac"),
+        grain = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 4, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Fac"),
+                          grain.outputs.get("Fac"), 0.22)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
                      _shade(base, 0.35, (0.25, 0.15, 0.08)),
                      _shade(base, -0.3, (0.2, 0.12, 0.06)), 0.5 + blend * 0.3)
         links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
-        _bump(nodes, links, princ, tex.outputs.get("Fac"), 0.3, 0.1)
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.45, 0.8)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.3, 0.1)
     elif preset == "bark":
         nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexVoronoi", seed, scale * 2)
         try:
             tex.feature = "F1"
         except AttributeError:
             pass
-        ramp = _ramp(nodes, links, tex.outputs.get("Distance"),
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 6, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Distance"),
+                          detail.outputs.get("Fac"), 0.3)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
                      _shade(base, 0.45, (0.12, 0.08, 0.05)), base, 0.35 + blend * 0.4)
         links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
-        _bump(nodes, links, princ, tex.outputs.get("Distance"), 0.9, 0.4)
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.7, 1.0)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.9, 0.4)
     elif preset == "stone":
         nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexVoronoi", seed, scale)
         try:
             tex.feature = "F1"
         except AttributeError:
             pass
-        ramp = _ramp(nodes, links, tex.outputs.get("Distance"),
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 5, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Distance"),
+                          detail.outputs.get("Fac"), 0.35)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
                      _shade(base, 0.3, (0.2, 0.2, 0.22)),
                      _shade(base, -0.25, (0.75, 0.75, 0.78)), 0.45 + blend * 0.3)
         links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
-        _bump(nodes, links, princ, tex.outputs.get("Distance"), 0.4, 0.15)
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.6, 0.95)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.4, 0.15)
     elif preset == "mossy":
         nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexNoise", seed, scale * 0.7)
         try:
             tex.inputs["Roughness"].default_value = 0.7
         except (KeyError, IndexError):
             pass
-        ramp = _ramp(nodes, links, tex.outputs.get("Fac"),
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 3, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Fac"),
+                          detail.outputs.get("Fac"), 0.4)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
                      _shade(base, -0.4, (0.45, 0.45, 0.46)), base, 0.4 + blend * 0.35)
         links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
-        _bump(nodes, links, princ, tex.outputs.get("Fac"), 0.6, 0.3)
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.75, 1.0)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.6, 0.3)
     elif preset == "grass_blend":
         nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexNoise", seed, scale * 1.5)
-        ramp = _ramp(nodes, links, tex.outputs.get("Fac"),
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 6, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Fac"),
+                          detail.outputs.get("Fac"), 0.35)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
                      _shade(base, 0.3, (0.15, 0.3, 0.1)),
                      _shade(base, -0.3, (0.45, 0.55, 0.25)), 0.5)
         links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
-        _bump(nodes, links, princ, tex.outputs.get("Fac"), 0.15, 0.05)
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.7, 1.0)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.15, 0.05)
     elif preset == "worn_metal":
         nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexNoise", seed, scale * 2)
-        ramp = _ramp(nodes, links, tex.outputs.get("Fac"),
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 7, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Fac"),
+                          detail.outputs.get("Fac"), 0.3)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
                      base, _shade(base, 0.5, (0.3, 0.18, 0.1)), 0.55 + blend * 0.3)
         links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
         try:
             princ.inputs["Metallic"].default_value = 0.9
         except KeyError:
             pass
-        _bump(nodes, links, princ, tex.outputs.get("Fac"), 0.2, 0.05)
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.3, 0.7)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.2, 0.05)
+    elif preset == "fabric":
+        nodes, links, princ, wx = _tex_chain(mat, "ShaderNodeTexWave", seed, scale * 3)
+        wx.wave_type = "BANDS"
+        wx.bands_direction = "X"
+        wy = _tex_layer(nodes, links, "ShaderNodeTexWave", scale * 3, seed + 17)
+        wy.wave_type = "BANDS"
+        wy.bands_direction = "Y"
+        weave = nodes.new("ShaderNodeMath")
+        try:
+            weave.operation = "MULTIPLY"
+        except AttributeError:
+            pass
+        links.new(wx.outputs.get("Fac"), weave.inputs[0])
+        links.new(wy.outputs.get("Fac"), weave.inputs[1])
+        ramp = _ramp(nodes, links, weave.outputs.get("Value"),
+                     _shade(base, 0.25, (0.1, 0.1, 0.1)),
+                     _shade(base, -0.2, (0.9, 0.9, 0.9)), 0.5 + blend * 0.2)
+        links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
+        _rough_from(nodes, links, princ, weave.outputs.get("Value"), 0.8, 1.0)
+        _bump(nodes, links, princ, weave.outputs.get("Value"), 0.5, 0.1)
+    elif preset == "plaster":
+        nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexNoise", seed, scale * 0.5)
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 4, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Fac"),
+                          detail.outputs.get("Fac"), 0.15)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
+                     _shade(base, 0.12, (0.7, 0.7, 0.7)),
+                     _shade(base, -0.12, (0.95, 0.95, 0.95)), 0.5 + blend * 0.2)
+        links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.85, 1.0)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.1, 0.05)
+    elif preset == "concrete":
+        nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexNoise", seed, scale)
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 4, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Fac"),
+                          detail.outputs.get("Fac"), 0.45)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
+                     _shade(base, 0.35, (0.25, 0.25, 0.26)),
+                     _shade(base, -0.3, (0.8, 0.8, 0.82)), 0.45 + blend * 0.3)
+        links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.7, 0.95)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.35, 0.12)
+    elif preset == "brushed_metal":
+        nodes, links, princ, tex = _tex_chain(
+            mat, "ShaderNodeTexNoise", seed, (float(scale), float(scale) * 25.0, float(scale)))
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise",
+                            (float(scale), float(scale) * 25.0, float(scale)), seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Fac"),
+                          detail.outputs.get("Fac"), 0.3)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
+                     _shade(base, 0.2, (0.4, 0.4, 0.42)),
+                     _shade(base, -0.2, (0.85, 0.85, 0.88)), 0.5 + blend * 0.2)
+        links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
+        try:
+            princ.inputs["Metallic"].default_value = 1.0
+        except KeyError:
+            pass
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.25, 0.55)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.1, 0.03)
+    elif preset == "leather":
+        nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexVoronoi", seed, scale * 3)
+        try:
+            tex.feature = "F1"
+        except AttributeError:
+            pass
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 5, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Distance"),
+                          detail.outputs.get("Fac"), 0.4)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
+                     _shade(base, 0.35, (0.15, 0.1, 0.08)),
+                     _shade(base, -0.2, (0.7, 0.55, 0.4)), 0.45 + blend * 0.3)
+        links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.55, 0.85)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.5, 0.2)
+    elif preset == "soil":
+        nodes, links, princ, tex = _tex_chain(mat, "ShaderNodeTexNoise", seed, scale)
+        detail = _tex_layer(nodes, links, "ShaderNodeTexNoise", scale * 3, seed + 17)
+        mix = _mix_detail(nodes, links, tex.outputs.get("Fac"),
+                          detail.outputs.get("Fac"), 0.45)
+        ramp = _ramp(nodes, links, mix.outputs.get("Color"),
+                     _shade(base, 0.4, (0.12, 0.08, 0.05)),
+                     _shade(base, -0.3, (0.5, 0.38, 0.22)), 0.45 + blend * 0.3)
+        links.new(ramp.outputs.get("Color"), princ.inputs.get("Base Color"))
+        _rough_from(nodes, links, princ, mix.outputs.get("Color"), 0.9, 1.0)
+        _bump(nodes, links, princ, mix.outputs.get("Color"), 0.7, 0.3)
     else:
         import warnings
         warnings.warn(f"unknown texture preset {preset!r}; using flat color")
@@ -2586,9 +2732,13 @@ VIEW_ANGLES = {
     "front_34": (60, 45), "back_34": (60, 135), "top": (10, 0), "wire": (60, 45),
 }
 
-# Flat world background for renders (linear); doubled as the exclusion color
-# for color-coverage measurement. Single source of truth with _setup_render.
-RENDER_BG = (0.85, 0.85, 0.88)
+# Bright neutral studio backdrop for renders (linear); doubled as the exclusion
+# color for color-coverage measurement. Single source of truth with _setup_render.
+# Metals mirror the world, so the backdrop is the main thing that makes them
+# read: 0.55 keeps steel near its albedo instead of vanishing into a dark void
+# (probed: 0.32 -> ~0.01 coverage, 0.55 -> 1.0). Shading still models because
+# the key (4.0) dominates the fill and GTAO grounds the contact shade.
+RENDER_BG = (0.55, 0.55, 0.58)
 
 
 def _setup_render(res=512):
@@ -2598,18 +2748,56 @@ def _setup_render(res=512):
     sc.render.resolution_x = res
     sc.render.resolution_y = res
     sc.render.film_transparent = False
+    # Truthful review plate: Standard shows authored albedo as-is instead of
+    # rolling highlights/saturation off the way filmic transforms do.
+    try:
+        sc.view_settings.view_transform = "Standard"
+    except (AttributeError, TypeError):
+        pass
     sc.world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
     sc.world.use_nodes = True
     bg = sc.world.node_tree.nodes.get("Background")
     if bg:
         bg.inputs[0].default_value = (*RENDER_BG, 1.0)
         bg.inputs[1].default_value = 1.0
-    # sun light
+    # cheap grounding for contact shade; guarded, property names move around
+    try:
+        sc.eevee.use_gtao = True
+    except AttributeError:
+        pass
+    # key + fill so one hard sun plus a white void stops flattening everything
     if not any(o.type == "LIGHT" for o in bpy.data.objects):
         bpy.ops.object.light_add(type="SUN", location=(3, -3, 6))
         sun = bpy.context.active_object
-        sun.data.energy = 3.0
+        sun.data.energy = 4.0
         sun.rotation_euler = Euler((math.radians(50), 0, math.radians(30)))
+        try:
+            sun.data.angle = math.radians(4.0)  # broad source, soft shadow edge
+        except AttributeError:
+            pass
+        bpy.ops.object.light_add(type="SUN", location=(-4, 3, 2))
+        fill = bpy.context.active_object
+        fill.data.energy = 0.9
+        fill.rotation_euler = Euler((math.radians(60), 0, math.radians(210)))
+        try:
+            fill.data.use_shadow = False
+        except AttributeError:
+            pass
+        # softbox: a broad area light gives metals and gloss something bright
+        # to reflect, so form reads on darker backdrops instead of going flat.
+        # No shadow — it is a sheen/fill card, the sun stays the shadow caster.
+        bpy.ops.object.light_add(type="AREA", location=(2, -4, 5))
+        soft = bpy.context.active_object
+        soft.data.energy = 150.0
+        try:
+            soft.data.size = 4.0
+        except AttributeError:
+            pass
+        soft.rotation_euler = Euler((math.radians(55), 0, math.radians(-25)))
+        try:
+            soft.data.use_shadow = False
+        except AttributeError:
+            pass
 
 
 def _fit_camera(dist_factor=2.2):

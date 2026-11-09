@@ -326,8 +326,8 @@ def create_3d(
     stairs, column, wall, fence, tree, weapon_blade, weapon_handle,
     terrain, scatter, skydome (vistas: scatter stamps an earlier node across a
     terrain node by name; skydome is render-only backdrop, excluded from validate/export).
-    Recipe materials accept an optional procedural `texture` preset (wood_grain,
-    bark, stone, mossy, grass_blend, worn_metal) with tex_scale/tex_blend/tex_seed.
+    Recipe materials accept an optional procedural `texture` preset (wood_grain,     bark, stone, mossy, grass_blend, worn_metal, fabric, plaster, concrete,
+     brushed_metal, leather, soil) with tex_scale/tex_blend/tex_seed.
 
     Blueprint follows the asset_blueprint v1 contract in README (kept with the asset for its lifecycle).
     Returns created nodes + triangle count. Afterwards use render_asset to inspect visually.
@@ -415,8 +415,8 @@ def set_material(name: str, color: list[float] | None = None,
                  tex_seed: int = 0) -> str:
     """Apply a PBR material to the asset (or a named object). color = [r,g,b] 0-1.
 
-    texture names a procedural preset (wood_grain, bark, stone, mossy,
-    grass_blend, worn_metal); tex_scale/tex_blend/tex_seed tune it. Unknown
+    texture names a procedural preset (wood_grain, bark, stone, mossy,     grass_blend, worn_metal, fabric, plaster, concrete, brushed_metal,
+     leather, soil); tex_scale/tex_blend/tex_seed tune it. Unknown
     names fall back to flat color. Recipe materials accept the same keys.
     """
     return json.dumps(_w.call("set_material", {

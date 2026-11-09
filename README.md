@@ -212,7 +212,7 @@ over stdio MCP or the daemon — 18 procedural/pipeline, 36 live-Blender
 | `set_geometry(builder, node_name, params)` | Add one node to the current recipe and rebuild |
 | `inspect_asset()` | Machine facts: triangles, dimensions, materials, UVs, modifiers, recipe, blueprint |
 | `render_asset(views, resolution)` | `front, back, left, right, front_34, back_34, top, wire` — returned for vision evaluation |
-| `set_material(...)` | PBR material + optional procedural texture preset (`wood_grain, bark, stone, mossy, grass_blend, worn_metal`) |
+| `set_material(...)` | PBR material + optional procedural texture preset (12 presets: wood, bark, stone, mossy, grass, worn/brushed metal, fabric, plaster, concrete, leather, soil) |
 | `validate_asset(triangle_budget)` | 7 machine checks (see below) |
 | `check_assertions(assertions, materials)` | Part count, ratios, symmetry, color coverage over renders; unmeasurable → `manual` |
 | `finalize_asset(...)` | Clean → UV → decimate → bake → LODs → collision → GLB + `asset.json` |
@@ -270,18 +270,29 @@ create_3d(recipe={
 
 ## 🎨 Procedural textures
 
-No downloads: a material's optional `texture` preset builds a small deterministic
+No downloads: a material's optional `texture` preset builds a deterministic
 EEVEE-safe shader chain (TexCoord → Mapping → Noise/Voronoi/Wave → ColorRamp →
-Principled + Bump) instead of a flat color.
+Principled + Bump) instead of a flat color. Each preset layers fine grain over
+a large base pattern and drives color, roughness, and bump from the mix.
 
 | Preset | Built from | Good for |
 |---|---|---|
-| `wood_grain` | stretched Wave bands + Bump | beams, crates, handles, doors |
-| `bark` | Voronoi cells + strong Bump | tree trunks |
-| `stone` | Voronoi F1 + Bump | rocks, walls, arches |
-| `mossy` | large-scale Noise blend + Bump | vista rocks, damp stone |
-| `grass_blend` | Noise blend + faint Bump | terrain |
-| `worn_metal` | Noise color/roughness + faint Bump | blades, latches, hoops |
+| `wood_grain` | Wave bands + fine grain, varied roughness | beams, crates, handles, doors |
+| `bark` | Voronoi cells + grain, rough everywhere | tree trunks |
+| `stone` | Voronoi F1 + grain, mottled roughness | rocks, walls, arches |
+| `mossy` | two-scale Noise blend | vista rocks, damp stone |
+| `grass_blend` | two-scale Noise, subtle relief | terrain |
+| `worn_metal` | two-layer Noise color/roughness | blades, latches, hoops |
+| `fabric` | crossed Wave weave + Bump | cushions, curtains, clothing |
+| `plaster` | soft low-contrast Noise, matte | interior walls, ceilings |
+| `concrete` | two-scale Noise + Bump | floors, pillars, exteriors |
+| `brushed_metal` | stretched Noise streaks, metallic | appliances, rails, trim |
+| `leather` | Voronoi cells broken by Noise | chairs, straps, bags |
+| `soil` | two-tone Noise + strong Bump | garden beds, terrain patches |
+
+Every preset now layers fine grain over its base pattern and drives both
+roughness and bump from the mix, so light breaks up across the surface
+instead of sitting flat like a prototype paint job.
 
 `tex_scale` tiles, `tex_blend` shifts the ramp midpoint, `tex_seed` varies the
 mapping. Unknown names warn and fall back to flat color. Chains survive baking

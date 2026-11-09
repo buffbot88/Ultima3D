@@ -75,7 +75,9 @@ def gimp_run_script(script: str, image: str | None = None,
 def gimp_make_texture(preset: str, size: int = 256, seed: int = 0) -> str:
     """Synthesize a tileable texture trio (albedo/rough/normal PNGs) headlessly.
 
-    Stdlib only — GIMP never opens. Presets: stone, wood_grain, noise.
+    Stdlib only — GIMP never opens. Presets: stone, wood_grain, noise, bark,
+    mossy, grass_blend, worn_metal, fabric, plaster, concrete, brushed_metal,
+    leather, soil.
     Pair with prep_image/export_png inside GIMP for finishing touches.
     """
     try:

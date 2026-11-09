@@ -1,6 +1,6 @@
 {
   "name": "ultima3d-dashboard",
-  "version": "12.0.0",
+  "version": "13.0.0",
   "description": "Ultima3D control dashboard: modules, managed skills, daemon lifecycle, system tray.",
   "main": "main.js",
   "scripts": {

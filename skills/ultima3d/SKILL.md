@@ -146,7 +146,8 @@ means the boundary does not close.
   a node's material applies to every object it creates.
 - `detail: draft|game|hero` picks density; an explicit density parameter always wins.
 - Material spec: `color` [r,g,b], `roughness`, `metallic`, optional `texture` preset
-  (`wood_grain, bark, stone, mossy, grass_blend, worn_metal`) with `tex_scale`, `tex_blend`,
+  (`wood_grain, bark, stone, mossy, grass_blend, worn_metal, fabric, plaster,
+  concrete, brushed_metal, leather, soil`) with `tex_scale`, `tex_blend`,
   `tex_seed`. Unknown preset names warn and fall back to flat color.
 - Vistas compose environment scenes: `terrain` (seeded value noise), `scatter` (stamps an earlier
   node across a terrain node by name), `skydome` (render-only backdrop, excluded from

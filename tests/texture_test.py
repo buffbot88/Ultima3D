@@ -55,10 +55,14 @@ def check(label, passed, detail=""):
 
 print("ping:", call("ping")["blender"])
 
-PRESETS = ["wood_grain", "bark", "stone", "mossy", "grass_blend", "worn_metal"]
+PRESETS = ["wood_grain", "bark", "stone", "mossy", "grass_blend", "worn_metal",
+           "fabric", "plaster", "concrete", "brushed_metal", "leather", "soil"]
 BASE = {"wood_grain": [0.5, 0.33, 0.18], "bark": [0.35, 0.24, 0.15],
         "stone": [0.55, 0.55, 0.57], "mossy": [0.3, 0.42, 0.2],
-        "grass_blend": [0.32, 0.45, 0.2], "worn_metal": [0.5, 0.5, 0.52]}
+        "grass_blend": [0.32, 0.45, 0.2], "worn_metal": [0.5, 0.5, 0.52],
+        "fabric": [0.45, 0.45, 0.48], "plaster": [0.85, 0.84, 0.82],
+        "concrete": [0.55, 0.55, 0.56], "brushed_metal": [0.55, 0.56, 0.58],
+        "leather": [0.4, 0.26, 0.15], "soil": [0.3, 0.22, 0.13]}
 
 for preset in PRESETS:
     r = call("build", {"recipe": {"node": {

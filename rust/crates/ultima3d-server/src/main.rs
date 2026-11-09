@@ -1703,7 +1703,7 @@ impl Ultima3d {
     }
 
     #[tool(
-        description = "Synthesize a tileable texture trio (albedo/rough/normal PNGs) headlessly. Presets: stone, wood_grain, noise."
+        description = "Synthesize a tileable texture trio (albedo/rough/normal PNGs) headlessly. 13 presets: stone, wood, bark, mossy, grass, metals, fabric, plaster, concrete, leather, soil, noise."
     )]
     async fn photoshop_make_texture(
         &self,
